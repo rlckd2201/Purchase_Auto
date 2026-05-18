@@ -1,0 +1,5 @@
+fastapi>=0.111,<1
+uvicorn[standard]>=0.30,<1
+pydantic>=2.7,<3
+playwright>=1.44,<2
+pytest>=8,<9
