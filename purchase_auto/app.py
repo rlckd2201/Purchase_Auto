@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
 
 from .config import load_settings
 from .models import CreatePurchaseJobRequest, PurchaseJob, RunStepResponse
@@ -15,6 +16,35 @@ from .services import (
 
 
 app = FastAPI(title="Purchase Auto", version="0.1.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.middleware("http")
+async def add_private_network_access_header(request: Request, call_next):
+    if (
+        request.method == "OPTIONS"
+        and request.headers.get("access-control-request-private-network")
+    ):
+        response = Response("OK", status_code=200)
+        origin = request.headers.get("origin") or "*"
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Methods"] = "DELETE, GET, HEAD, OPTIONS, PATCH, POST, PUT"
+        response.headers["Access-Control-Allow-Headers"] = request.headers.get(
+            "access-control-request-headers",
+            "*",
+        )
+        response.headers["Access-Control-Allow-Private-Network"] = "true"
+        return response
+
+    response = await call_next(request)
+    response.headers["Access-Control-Allow-Private-Network"] = "true"
+    return response
 
 
 def _http_error(exc: Exception) -> HTTPException:
