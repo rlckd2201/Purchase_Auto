@@ -35,6 +35,11 @@ def get_purchase_job(job_id: str, settings: Settings | None = None) -> PurchaseJ
 
 def run_compuzone_order_step(job_id: str, settings: Settings | None = None) -> PurchaseJob:
     cfg = _settings(settings)
+    if cfg.dry_run:
+        raise ValueError(
+            "Purchase_Auto 테스트모드(dry_run=True)라 실제 컴퓨존 주문/견적 실행을 하지 않습니다. "
+            "실행하려면 PURCHASE_AUTO_DRY_RUN=0 및 PURCHASE_AUTO_ENABLE_LIVE_COMPUZONE_ORDER=1 설정이 필요합니다."
+        )
     job = get_purchase_job(job_id, cfg)
     try:
         db.append_log(cfg.db_path, job_id, "컴퓨존 장바구니/무통장 주문 생성을 시작합니다.")
@@ -63,6 +68,11 @@ def run_compuzone_order_step(job_id: str, settings: Settings | None = None) -> P
 
 def submit_approval_step(job_id: str, settings: Settings | None = None) -> PurchaseJob:
     cfg = _settings(settings)
+    if cfg.dry_run:
+        raise ValueError(
+            "Purchase_Auto 테스트모드(dry_run=True)라 실제 그룹웨어 품의 상신을 하지 않습니다. "
+            "실행하려면 PURCHASE_AUTO_DRY_RUN=0 및 PURCHASE_AUTO_ENABLE_LIVE_GROUPWARE_SUBMIT=1 설정이 필요합니다."
+        )
     job = get_purchase_job(job_id, cfg)
     try:
         if not job.order_no:
@@ -91,6 +101,8 @@ def submit_approval_step(job_id: str, settings: Settings | None = None) -> Purch
 
 def mark_tax_invoice_received(job_id: str, settings: Settings | None = None) -> PurchaseJob:
     cfg = _settings(settings)
+    if cfg.dry_run:
+        raise ValueError("Purchase_Auto 테스트모드(dry_run=True)에서는 세금계산서 수신 완료 처리를 하지 않습니다.")
     job = get_purchase_job(job_id, cfg)
     try:
         if job.status not in {
