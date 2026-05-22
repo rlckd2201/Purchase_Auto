@@ -40,6 +40,16 @@ class CreatePurchaseJobRequest(BaseModel):
     memo: str | None = None
 
 
+
+class RunCompuzoneOrderRequest(BaseModel):
+    compuzone_login_id: str | None = None
+
+
+class SubmitApprovalRequest(BaseModel):
+    groupware_login_id: str | None = None
+    groupware_login_password: str | None = None
+
+
 class PurchaseJob(BaseModel):
     job_id: str
     corp: str
