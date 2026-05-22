@@ -22,7 +22,7 @@ CORPS: dict[str, CorpConfig] = {
         business_numbers=("125-81-05619", "403-85-07607", "403-85-23311"),
         approval_form_label="대승 - (관리총괄)기안용지(관리직)",
         finance_reference_group="재정_대승",
-        aliases=("대승", "D1", "D2", "D3", "DS", "(주)대승", "주식회사 대승"),
+        aliases=("D1", "D2", "D3", "DS", "(주)대승", "주식회사 대승"),
     ),
     "daeseung_precision": CorpConfig(
         code="daeseung_precision",
@@ -31,7 +31,7 @@ CORPS: dict[str, CorpConfig] = {
         business_numbers=("125-81-32697", "403-85-15640", "844-85-00770", "118-85-07029"),
         approval_form_label="대승정밀 - (관리총괄)기안용지(관리직)",
         finance_reference_group="재정_대승정밀",
-        aliases=("대승정밀", "P1", "P2", "P3", "P4", "DSJM", "대승정밀(주)", "주식회사 대승정밀"),
+        aliases=("P1", "P2", "P3", "P4", "DSJM", "대승정밀(주)", "주식회사 대승정밀"),
     ),
     "ilgang": CorpConfig(
         code="ilgang",
@@ -40,7 +40,7 @@ CORPS: dict[str, CorpConfig] = {
         business_numbers=("125-81-51622", "403-85-20895"),
         approval_form_label="일강 - (경영)기안용지",
         finance_reference_group="재정_일강",
-        aliases=("일강", "IG", "(주)일강", "주식회사 일강"),
+        aliases=("IG", "(주)일강", "주식회사 일강"),
     ),
 }
 

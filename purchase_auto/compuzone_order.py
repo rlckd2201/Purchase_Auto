@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import base64
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -15,6 +16,14 @@ class AutomationNotEnabledError(RuntimeError):
 
 class LoginRequiredError(RuntimeError):
     pass
+
+
+class QuoteDownloadError(RuntimeError):
+    def __init__(self, message: str, order_no: str, amount: int | None, item_summary: str) -> None:
+        super().__init__(message)
+        self.order_no = order_no
+        self.amount = amount
+        self.item_summary = item_summary
 
 
 @dataclass(frozen=True)
@@ -45,7 +54,7 @@ def _item_summary(job: PurchaseJob) -> str:
 
 def _dry_run_order(job: PurchaseJob, settings: Settings) -> CompuzoneOrderResult:
     order_no = f"9{abs(hash(job.job_id)) % 10000000:07d}"
-    quote_path = _job_artifact_dir(job, settings) / f"compuzone_quote_{order_no}.pdf"
+    quote_path = _quote_pdf_path(job, settings, order_no)
     lines = [
         f"Dry-run order number: {order_no}",
         f"Corp: {job.corp}",
@@ -69,75 +78,152 @@ def _live_order(job: PurchaseJob, settings: Settings) -> CompuzoneOrderResult:
 
     settings.compuzone_profile_dir.mkdir(parents=True, exist_ok=True)
     with sync_playwright() as p:
-        context = p.chromium.launch_persistent_context(
-            user_data_dir=str(settings.compuzone_profile_dir),
-            headless=settings.headless,
-            accept_downloads=True,
-        )
+        browser = None
+        close_context = True
+        if settings.compuzone_cdp_url:
+            browser = p.chromium.connect_over_cdp(settings.compuzone_cdp_url)
+            context = browser.contexts[0] if browser.contexts else browser.new_context(accept_downloads=True)
+            close_context = False
+        else:
+            context = p.chromium.launch_persistent_context(
+                user_data_dir=str(settings.compuzone_profile_dir),
+                headless=settings.headless,
+                accept_downloads=True,
+            )
         page = context.new_page()
         page.on("dialog", lambda dialog: dialog.accept())
         try:
-            for item in job.items:
-                page.goto(item.url, wait_until="domcontentloaded", timeout=60000)
-                _raise_if_login_required(page)
-                _set_quantity(page, item.quantity)
-                _click_first(
-                    page,
-                    [
-                        "button:has-text('장바구니')",
-                        "a:has-text('장바구니')",
-                        "input[value*='장바구니']",
-                        "[onclick*='cart']",
-                    ],
-                    "장바구니 버튼을 찾지 못했습니다.",
-                )
-                page.wait_for_timeout(1000)
-
-            page.goto(settings.compuzone_cart_url, wait_until="domcontentloaded", timeout=60000)
+            _ensure_compuzone_session(page, settings)
+            if len(job.items) == 1:
+                _open_single_item_order_page(page, job.items[0])
+            else:
+                _open_cart_order_page(page, job, settings)
             _raise_if_login_required(page)
-            _click_first(
-                page,
-                [
-                    "button:has-text('주문하기')",
-                    "a:has-text('주문하기')",
-                    "button:has-text('구매하기')",
-                    "a:has-text('구매하기')",
-                ],
-                "장바구니 주문 버튼을 찾지 못했습니다.",
-            )
-            page.wait_for_load_state("domcontentloaded", timeout=60000)
-            _raise_if_login_required(page)
-            _select_bank_transfer(page)
-            _fill_depositor_name(page, settings.compuzone_depositor_name)
-            _check_required_agreements(page)
-            _click_first(
-                page,
-                [
-                    "button:has-text('결제하기')",
-                    "button:has-text('주문하기')",
-                    "a:has-text('결제하기')",
-                    "a:has-text('주문하기')",
-                    "input[value*='결제']",
-                    "input[value*='주문']",
-                ],
-                "최종 주문 버튼을 찾지 못했습니다.",
-            )
+            _prepare_order_page(page, settings, job)
+            _click_final_order(page)
             page.wait_for_load_state("domcontentloaded", timeout=60000)
             body = page.locator("body").inner_text(timeout=10000)
             order_no = _extract_order_no(body)
             amount = _extract_amount(body)
-            quote_path = _download_quote_pdf(page, order_no, settings, job)
+            item_summary = _item_summary(job)
+            try:
+                quote_path = _download_quote_pdf(page, order_no, settings, job)
+            except Exception as exc:
+                raise QuoteDownloadError(str(exc), order_no, amount, item_summary) from exc
             return CompuzoneOrderResult(
                 order_no=order_no,
                 amount=amount,
-                item_summary=_item_summary(job),
+                item_summary=item_summary,
                 quote_pdf_path=str(quote_path),
                 raw_status="order_submitted_pending_payment",
             )
         except PlaywrightTimeoutError as exc:
+            _save_debug_screenshot(page, job, settings, "compuzone_timeout")
             raise RuntimeError(f"컴퓨존 자동화 타임아웃: {exc}") from exc
+        except Exception:
+            _save_debug_screenshot(page, job, settings, "compuzone_error")
+            raise
         finally:
-            context.close()
+            if close_context:
+                context.close()
+
+
+def _save_debug_screenshot(page, job: PurchaseJob, settings: Settings, stem: str) -> None:
+    try:
+        debug_dir = _job_artifact_dir(job, settings)
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        page.screenshot(path=str(debug_dir / f"{stem}.png"), full_page=True)
+    except Exception:
+        pass
+
+
+def _open_single_item_order_page(page, item) -> None:
+    page.goto(item.url, wait_until="domcontentloaded", timeout=60000)
+    _raise_if_login_required(page)
+    _set_quantity(page, item.quantity)
+    _click_first(
+        page,
+        [
+            "a.buy[onclick*='option_insert_direct']",
+            "a[onclick*='option_insert_direct']",
+            "button:has-text('구매하기')",
+            "a:has-text('구매하기')",
+            "input[value*='구매하기']",
+        ],
+        "바로구매 버튼을 찾지 못했습니다.",
+    )
+    page.wait_for_load_state("domcontentloaded", timeout=60000)
+
+
+def _open_cart_order_page(page, job: PurchaseJob, settings: Settings) -> None:
+    if settings.compuzone_clear_cart_before_order:
+        _clear_cart(page, settings)
+    for item in job.items:
+        page.goto(item.url, wait_until="domcontentloaded", timeout=60000)
+        _raise_if_login_required(page)
+        _set_quantity(page, item.quantity)
+        _click_first(
+            page,
+            [
+                "a.cart[onclick*='buy_direct']",
+                "a.cart[onclick*='option_insert']",
+                "button:has-text('장바구니')",
+                "a:has-text('장바구니')",
+                "input[value*='장바구니']",
+                "[onclick*='cart']",
+            ],
+            "장바구니 버튼을 찾지 못했습니다.",
+        )
+        if not _wait_body_contains(page, "장바구니에 담겼습니다", timeout_ms=7000):
+            raise RuntimeError(f"상품이 장바구니에 담기지 않았습니다: {item.url}")
+
+    page.goto(settings.compuzone_cart_url, wait_until="domcontentloaded", timeout=60000)
+    _raise_if_login_required(page)
+    _click_first(
+        page,
+        [
+            "button:has-text('전체 주문')",
+            "a:has-text('전체 주문')",
+            "input[value*='전체 주문']",
+            "button:has-text('선택 주문')",
+            "a:has-text('선택 주문')",
+            "input[value*='선택 주문']",
+            "button:has-text('주문하기')",
+            "a:has-text('주문하기')",
+            "button:has-text('구매하기')",
+            "a:has-text('구매하기')",
+            "button[onclick*='Order']",
+            "a[onclick*='Order']",
+            "button[onclick*='order']",
+            "a[onclick*='order']",
+        ],
+        "장바구니 주문 버튼을 찾지 못했습니다.",
+    )
+    page.wait_for_load_state("domcontentloaded", timeout=60000)
+
+
+def _clear_cart(page, settings: Settings) -> None:
+    page.goto(settings.compuzone_cart_url, wait_until="domcontentloaded", timeout=60000)
+    _raise_if_login_required(page)
+    if not _body_contains(page, "장바구니 비우기"):
+        return
+    try:
+        _click_first(
+            page,
+            [
+                "button:has-text('장바구니 비우기')",
+                "a:has-text('장바구니 비우기')",
+                "input[value*='장바구니 비우기']",
+                "button:has-text('비우기')",
+                "a:has-text('비우기')",
+                "input[value*='비우기']",
+            ],
+            "장바구니 비우기 버튼을 찾지 못했습니다.",
+            timeout=2000,
+        )
+        page.wait_for_load_state("domcontentloaded", timeout=10000)
+    except Exception:
+        page.wait_for_timeout(1500)
 
 
 def _click_first(page, selectors: list[str], error_message: str, timeout: int = 5000) -> None:
@@ -151,33 +237,439 @@ def _click_first(page, selectors: list[str], error_message: str, timeout: int = 
     raise RuntimeError(error_message)
 
 
+def _ensure_compuzone_session(page, settings: Settings) -> None:
+    page.goto("https://www.compuzone.co.kr/login/login.htm", wait_until="domcontentloaded", timeout=60000)
+    page.wait_for_timeout(1500)
+    if _compuzone_logged_in(page):
+        return
+    if not settings.compuzone_login_id or not settings.compuzone_login_password:
+        _raise_if_login_required(page)
+        return
+    _fill_login_input(
+        page,
+        "#member_id, input[name='member_id'], input[name='login_id'], input[name='id']",
+        settings.compuzone_login_id,
+    )
+    _fill_login_input(
+        page,
+        "#member_password, input[name='member_password'], input[type='password']",
+        settings.compuzone_login_password,
+    )
+    _submit_compuzone_login(page)
+    if _wait_for_compuzone_login(page, timeout_ms=15000):
+        return
+
+    page.goto("https://www.compuzone.co.kr/main/main.htm", wait_until="domcontentloaded", timeout=60000)
+    page.wait_for_timeout(1500)
+    if not _compuzone_logged_in(page):
+        raise LoginRequiredError("컴퓨존 로그인에 실패했습니다. 계정 또는 보안 확인이 필요합니다.")
+
+
+def _submit_compuzone_login(page) -> None:
+    button_selectors = [
+        "button.login-btn.bg-blue",
+        "button[type='submit']",
+        "input[type='submit']",
+        "button:has-text('로그인')",
+        "a:has-text('로그인')",
+        "input[value*='로그인']",
+        "[onclick*='login_check']",
+        "[onclick*='Login']",
+        "[onclick*='login']",
+    ]
+    clicked = False
+    for selector in button_selectors:
+        try:
+            locator = page.locator(selector).first
+            if locator.is_visible(timeout=800):
+                locator.click(timeout=3000)
+                clicked = True
+                break
+        except Exception:
+            continue
+
+    if clicked:
+        page.wait_for_timeout(1500)
+    else:
+        try:
+            page.locator("#member_password, input[name='member_password'], input[type='password']").first.press(
+                "Enter", timeout=3000
+            )
+            page.wait_for_timeout(1500)
+        except Exception:
+            pass
+
+    if _compuzone_logged_in(page):
+        return
+
+    try:
+        page.evaluate(
+            """
+            () => {
+              if (typeof window.login_check === 'function') {
+                return window.login_check();
+              }
+              const password = document.querySelector('#member_password, input[name="member_password"], input[type="password"]');
+              const form = password ? password.closest('form') : document.querySelector('form');
+              if (form) {
+                if (typeof form.requestSubmit === 'function') {
+                  form.requestSubmit();
+                } else {
+                  form.submit();
+                }
+              }
+              return null;
+            }
+            """
+        )
+    except Exception:
+        pass
+
+
+def _wait_for_compuzone_login(page, timeout_ms: int) -> bool:
+    step_ms = 500
+    waited_ms = 0
+    while waited_ms <= timeout_ms:
+        if _compuzone_logged_in(page):
+            return True
+        page.wait_for_timeout(step_ms)
+        waited_ms += step_ms
+    return False
+
+
+def _compuzone_logged_in(page) -> bool:
+    try:
+        body = page.locator("body").inner_text(timeout=5000)
+    except Exception:
+        return False
+    return "로그아웃" in body
+
+
+def _fill_login_input(page, selector: str, value: str) -> None:
+    locator = page.locator(selector).first
+    locator.wait_for(state="visible", timeout=10000)
+    locator.fill(value, timeout=5000)
+
+
 def _set_quantity(page, quantity: int) -> None:
     selectors = [
         "input[name='OrdQty']",
         "input[name='quantity']",
         "input[name='qty']",
         "input[id*='qty']",
+        "input[id^='last_ea']",
+        "input[name^='last_ea']",
+        "input.num",
+        "input[class*='last_']",
         "input[title*='수량']",
     ]
     for selector in selectors:
-        locator = page.locator(selector).first
-        try:
-            locator.fill(str(quantity), timeout=3000)
-            return
-        except Exception:
-            continue
+        for locator in page.locator(selector).all():
+            try:
+                if not locator.is_visible(timeout=500):
+                    continue
+                locator.fill(str(quantity), timeout=3000)
+                locator.evaluate(
+                    """
+                    el => {
+                      el.dispatchEvent(new Event('input', { bubbles: true }));
+                      el.dispatchEvent(new Event('change', { bubbles: true }));
+                      el.dispatchEvent(new Event('blur', { bubbles: true }));
+                      for (const fn of ['every_total_price', 'Add_Total_Price']) {
+                        try {
+                          if (typeof window[fn] === 'function') {
+                            window[fn]();
+                          }
+                        } catch (_) {
+                        }
+                      }
+                    }
+                    """
+                )
+                return
+            except Exception:
+                continue
     if quantity != 1:
         raise RuntimeError("수량 입력칸을 찾지 못했습니다.")
 
 
 def _raise_if_login_required(page) -> None:
-    text = ""
+    if "login" in page.url.lower():
+        raise LoginRequiredError("컴퓨존 로그인이 필요합니다. 담당자 PC 브라우저 세션을 먼저 확인해 주세요.")
+    login_form_visible = False
     try:
-        text = page.locator("body").inner_text(timeout=5000)
+        login_form_visible = page.locator(
+            "#member_id, input[name='member_id'], #member_password, input[name='member_password']"
+        ).first.is_visible(timeout=500)
     except Exception:
         pass
-    if "로그인" in text and ("아이디" in text or "비밀번호" in text):
+    if login_form_visible:
         raise LoginRequiredError("컴퓨존 로그인이 필요합니다. 담당자 PC 브라우저 세션을 먼저 확인해 주세요.")
+
+
+def _prepare_order_page(page, settings: Settings, job: PurchaseJob) -> None:
+    delivery_name, delivery_keywords = _job_delivery_selection(job, settings)
+    business_number, business_contact_name = _job_tax_business_selection(job, settings)
+    _dismiss_order_info_modal(page)
+    _select_delivery_address(page, delivery_name, delivery_keywords)
+    _select_bank_transfer(page)
+    _select_tax_business(
+        page,
+        business_number,
+        business_contact_name,
+    )
+    _fill_depositor_name(page, settings.compuzone_depositor_name)
+    _check_invoice_options(page)
+    _check_required_agreements(page)
+    _dismiss_order_info_modal(page)
+
+
+def _job_delivery_selection(job: PurchaseJob, settings: Settings) -> tuple[str, tuple[str, ...]]:
+    delivery_name = _memo_field(job, ("배송지", "delivery_name", "delivery")) or settings.compuzone_delivery_name
+    raw_keywords = _memo_field(job, ("배송키워드", "delivery_keywords", "delivery_keyword"))
+    if raw_keywords:
+        keywords = tuple(part.strip() for part in re.split(r"[,，/]+", raw_keywords) if part.strip())
+    else:
+        keywords = settings.compuzone_delivery_keywords
+    return delivery_name, keywords
+
+
+def _job_tax_business_selection(job: PurchaseJob, settings: Settings) -> tuple[str, str]:
+    business_number = _memo_field(job, ("사업자번호", "business_number", "business_no")) or settings.compuzone_business_number
+    contact_name = _memo_field(job, ("사업자담당자", "business_contact_name", "business_contact")) or settings.compuzone_business_contact_name
+    return business_number, contact_name
+
+
+def _memo_field(job: PurchaseJob, names: tuple[str, ...]) -> str:
+    memo = job.memo or ""
+    for line in memo.splitlines():
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        normalized = key.strip().lower().replace(" ", "_")
+        for name in names:
+            if normalized == name.strip().lower().replace(" ", "_"):
+                return value.strip()
+    return ""
+
+
+def _normalize_text(value: str) -> str:
+    return re.sub(r"\s+", "", value or "").lower()
+
+
+def _body_contains(page, value: str) -> bool:
+    if not value:
+        return True
+    try:
+        body = page.locator("body").inner_text(timeout=3000)
+    except Exception:
+        return False
+    return _normalize_text(value) in _normalize_text(body)
+
+
+def _body_contains_all(page, values: tuple[str, ...]) -> bool:
+    return all(_body_contains(page, value) for value in values)
+
+
+def _wait_body_contains_all(page, values: tuple[str, ...], timeout_ms: int = 10000) -> bool:
+    attempts = max(1, timeout_ms // 500)
+    for _ in range(attempts):
+        if _body_contains_all(page, values):
+            return True
+        page.wait_for_timeout(500)
+    return _body_contains_all(page, values)
+
+
+def _wait_body_contains(page, value: str, timeout_ms: int = 10000) -> bool:
+    attempts = max(1, timeout_ms // 500)
+    for _ in range(attempts):
+        if _body_contains(page, value):
+            return True
+        page.wait_for_timeout(500)
+    return _body_contains(page, value)
+
+
+def _open_popup(page, selectors: list[str], error_message: str):
+    for selector in selectors:
+        try:
+            locator = page.locator(selector).first
+            try:
+                locator.scroll_into_view_if_needed(timeout=1000)
+            except Exception:
+                pass
+            with page.expect_popup(timeout=5000) as popup_info:
+                locator.click(timeout=3000)
+            popup = popup_info.value
+            popup.wait_for_load_state("domcontentloaded", timeout=10000)
+            return popup
+        except Exception:
+            continue
+    raise RuntimeError(error_message)
+
+
+def _open_tax_business_popup(page):
+    try:
+        return _open_popup(
+            page,
+            [
+                "a[href*='tax_list']",
+                "a[onclick*='PopTaxManager']",
+                "button[onclick*='tax_list']",
+                "a[onclick*='tax_list']",
+                "input[onclick*='tax_list']",
+                "button[onclick*='PopTaxManager']",
+                "input[onclick*='PopTaxManager']",
+            ],
+            "사업자 수정 버튼을 찾지 못했습니다.",
+        )
+    except RuntimeError:
+        pass
+
+    try:
+        with page.expect_popup(timeout=5000) as popup_info:
+            clicked = page.evaluate(
+                """
+                () => {
+                  const normalize = value => String(value || '').replace(/\\s+/g, '').toLowerCase();
+                  const controls = Array.from(document.querySelectorAll('button, a, input[type="button"], input[type="submit"]'));
+                  const target = controls.find(el => {
+                    const text = normalize(el.innerText || el.value || el.title);
+                    if (!text.includes('수정')) {
+                      return false;
+                    }
+                    let node = el;
+                    for (let i = 0; node && i < 5; i += 1) {
+                      const context = normalize(node.innerText || node.textContent || '');
+                      if (context.includes('사업자')) {
+                        return true;
+                      }
+                      node = node.parentElement;
+                    }
+                    return false;
+                  });
+                  if (!target) {
+                    return false;
+                  }
+                  target.click();
+                  return true;
+                }
+                """
+            )
+            if not clicked:
+                raise RuntimeError("사업자 수정 버튼을 찾지 못했습니다.")
+        popup = popup_info.value
+        popup.wait_for_load_state("domcontentloaded", timeout=10000)
+        return popup
+    except Exception as exc:
+        raise RuntimeError("사업자 수정 버튼을 찾지 못했습니다.") from exc
+
+
+def _click_popup_row_by_text(popup, needles: list[str], action_text: str | None = None) -> None:
+    popup.wait_for_load_state("domcontentloaded", timeout=10000)
+    popup.wait_for_timeout(500)
+    clicked = False
+    for _ in range(8):
+        try:
+            clicked = popup.evaluate(
+                """
+                ({ needles, actionText }) => {
+                  const normalize = value => String(value || '').replace(/\\s+/g, '').toLowerCase();
+                  const wanted = needles.filter(Boolean).map(normalize);
+                  const action = normalize(actionText || '');
+                  const rows = Array.from(document.querySelectorAll('tr'));
+
+                  for (const row of rows) {
+                    const rowText = normalize(row.innerText || row.textContent || '');
+                    if (!wanted.every(text => rowText.includes(text))) {
+                      continue;
+                    }
+
+                    const controls = Array.from(row.querySelectorAll('button, a, input[type="button"], input[type="submit"]'));
+                    if (action) {
+                      const preferred = controls.find(el => normalize(el.innerText || el.value || el.title).includes(action));
+                      if (preferred) {
+                        preferred.click();
+                        return true;
+                      }
+                    }
+
+                    const cells = Array.from(row.querySelectorAll('td, th'));
+                    const addressNeedles = wanted.slice(1);
+                    const matchingCell =
+                      cells.find(el => {
+                        const text = normalize(el.innerText || el.textContent || '');
+                        return addressNeedles.some(needle => text.includes(needle));
+                      }) ||
+                      cells.find(el => {
+                        const text = normalize(el.innerText || el.textContent || '');
+                        return wanted.some(needle => text.includes(needle));
+                      });
+                    if (matchingCell) {
+                      matchingCell.click();
+                      return true;
+                    }
+
+                    if (action) {
+                      const fallback = controls.find(el => {
+                        const text = normalize(el.innerText || el.value || el.title);
+                        return !text.includes('수정') && !text.includes('삭제');
+                      });
+                      if (fallback) {
+                        fallback.click();
+                        return true;
+                      }
+                    }
+
+                    row.click();
+                    return true;
+                  }
+
+                  return false;
+                }
+                """,
+                {"needles": needles, "actionText": action_text or ""},
+            )
+            break
+        except Exception:
+            popup.wait_for_timeout(500)
+    if not clicked:
+        raise RuntimeError(f"팝업에서 선택 대상({', '.join(needles)})을 찾지 못했습니다.")
+
+
+def _select_delivery_address(page, delivery_name: str, delivery_keywords: tuple[str, ...]) -> None:
+    if _wait_body_contains_all(page, delivery_keywords):
+        return
+    page.wait_for_timeout(1000)
+    _dismiss_order_info_modal(page)
+    page.wait_for_timeout(300)
+    _dismiss_order_info_modal(page)
+    popup = _open_popup(
+        page,
+        [
+            "a:has-text('배송지 목록')",
+            "a:has-text('배송지목록')",
+            "button:has-text('배송지목록')",
+            "a[onclick*='PopAddressManagerList']",
+            "button[onclick*='PopAddressManagerList']",
+            "input[onclick*='PopAddressManagerList']",
+            "a[href*='prevDelivery']",
+            "a[onclick*='prevDelivery']",
+            "button[onclick*='prevDelivery']",
+            "input[onclick*='prevDelivery']",
+        ],
+        "배송지 목록 버튼을 찾지 못했습니다.",
+    )
+    try:
+        _click_popup_row_by_text(popup, [*delivery_keywords], None)
+        popup.wait_for_event("close", timeout=5000)
+    except Exception:
+        if not popup.is_closed():
+            popup.close()
+        raise
+    page.bring_to_front()
+    page.wait_for_timeout(1000)
+    if not _wait_body_contains_all(page, delivery_keywords):
+        raise RuntimeError(f"배송지가 '{delivery_name}'(으)로 변경되지 않았습니다.")
 
 
 def _select_bank_transfer(page) -> None:
@@ -191,8 +683,83 @@ def _select_bank_transfer(page) -> None:
     _click_first(page, selectors, "무통장입금 결제수단을 찾지 못했습니다.", timeout=3000)
 
 
+def _select_tax_business(page, business_number: str, contact_name: str) -> None:
+    if _body_contains(page, business_number) and _body_contains(page, contact_name):
+        return
+    popup = _open_tax_business_popup(page)
+    try:
+        needles = [business_number]
+        if contact_name:
+            needles.append(contact_name)
+        _click_popup_row_by_text(popup, needles, "선택")
+        popup.wait_for_event("close", timeout=5000)
+    except Exception:
+        if not popup.is_closed():
+            popup.close()
+        raise
+    page.bring_to_front()
+    page.wait_for_timeout(1000)
+    if not _body_contains(page, business_number):
+        raise RuntimeError(f"사업자가 '{business_number}'(으)로 변경되지 않았습니다.")
+
+
 def _fill_depositor_name(page, depositor_name: str) -> None:
-    if not depositor_name:
+    filled = page.evaluate(
+        """
+        depositorName => {
+          const readValue = selector => {
+            const el = document.querySelector(selector);
+            return el ? String(el.value || '').trim() : '';
+          };
+          const value =
+            String(depositorName || '').trim() ||
+            readValue('#TaxAccountName') ||
+            readValue('input[name="TaxAccountName"]') ||
+            readValue('#LatestOrderDeposit') ||
+            readValue('input[name="LatestOrderDeposit"]');
+          if (!value) {
+            return false;
+          }
+
+          const setValue = selector => {
+            for (const el of document.querySelectorAll(selector)) {
+              el.value = value;
+              el.dispatchEvent(new Event('input', { bubbles: true }));
+              el.dispatchEvent(new Event('change', { bubbles: true }));
+              el.dispatchEvent(new Event('blur', { bubbles: true }));
+            }
+          };
+
+          setValue('#OrderDeposit, input[name="OrderDeposit"]');
+          setValue('#OrderDepositTax, input[name="OrderDepositTax"]');
+          setValue('#LatestOrderDeposit, input[name="LatestOrderDeposit"]');
+
+          for (const selector of [
+            '#SelectOrderDeposit2',
+            'input[name="SelectOrderDeposit"][value="2"]',
+            'input[name="OrderDepositSelect"][value="2"]'
+          ]) {
+            const radio = document.querySelector(selector);
+            if (radio) {
+              radio.checked = true;
+              radio.dispatchEvent(new Event('input', { bubbles: true }));
+              radio.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+          }
+
+          for (const selector of ['#UseDeliveryBarcodeGift', 'input[name="UseDeliveryBarcodeGift"]']) {
+            const checkbox = document.querySelector(selector);
+            if (checkbox && checkbox.checked) {
+              checkbox.checked = false;
+              checkbox.dispatchEvent(new Event('change', { bubbles: true }));
+            }
+          }
+          return true;
+        }
+        """,
+        depositor_name,
+    )
+    if filled or not depositor_name:
         return
     selectors = [
         "input[name*='depositor']",
@@ -209,11 +776,243 @@ def _fill_depositor_name(page, depositor_name: str) -> None:
             continue
 
 
+def _dismiss_order_info_modal(page) -> None:
+    page.evaluate(
+        """
+        () => {
+          const visible = (element) => {
+            const style = window.getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+          };
+          const closeByText = (needle) => {
+            const roots = Array.from(document.querySelectorAll('div, section, article'))
+              .filter(element => visible(element) && (element.innerText || element.textContent || '').includes(needle))
+              .sort((a, b) => {
+                const ar = a.getBoundingClientRect();
+                const br = b.getBoundingClientRect();
+                return (ar.width * ar.height) - (br.width * br.height);
+              });
+            for (const root of roots) {
+              const close = Array.from(root.querySelectorAll('button, a, span, i, em, div'))
+                .filter(visible)
+                .find(element => {
+                  const text = (element.innerText || element.textContent || '').replace(/\\s+/g, ' ').trim();
+                  const klass = String(element.className || '').toLowerCase();
+                  const title = String(element.title || '').toLowerCase();
+                  return text === '×' || text === 'X' || text === '닫기' || klass.includes('close') || title.includes('닫기');
+                });
+              if (close) {
+                close.click();
+                return true;
+              }
+              root.style.display = 'none';
+              return true;
+            }
+            return false;
+          };
+          const hideLayerByText = (needle) => {
+            const candidates = Array.from(document.querySelectorAll('div, section, article'))
+              .filter(element => visible(element) && (element.innerText || element.textContent || '').includes(needle));
+            for (const candidate of candidates) {
+              let node = candidate;
+              for (let depth = 0; node && depth < 8; depth += 1) {
+                const style = window.getComputedStyle(node);
+                const rect = node.getBoundingClientRect();
+                const zIndex = Number.parseInt(style.zIndex || '0', 10);
+                const modalLike =
+                  style.position === 'fixed' ||
+                  style.position === 'absolute' ||
+                  zIndex >= 100 ||
+                  (rect.width >= 400 && rect.height >= 200);
+                if (modalLike) {
+                  node.style.display = 'none';
+                  node.setAttribute('aria-hidden', 'true');
+                  return true;
+                }
+                node = node.parentElement;
+              }
+            }
+            return false;
+          };
+          const removeLayerByText = (needle) => {
+            const candidates = Array.from(document.querySelectorAll('div, section, article'))
+              .filter(element => visible(element) && (element.innerText || element.textContent || '').includes(needle))
+              .sort((a, b) => {
+                const ar = a.getBoundingClientRect();
+                const br = b.getBoundingClientRect();
+                return (ar.width * ar.height) - (br.width * br.height);
+              });
+            for (const candidate of candidates) {
+              let node = candidate;
+              for (let depth = 0; node && depth < 8; depth += 1) {
+                if (node === document.body || node === document.documentElement) {
+                  break;
+                }
+                const style = window.getComputedStyle(node);
+                const rect = node.getBoundingClientRect();
+                const zIndex = Number.parseInt(style.zIndex || '0', 10);
+                const modalLike =
+                  style.position === 'fixed' ||
+                  style.position === 'absolute' ||
+                  zIndex >= 100 ||
+                  (rect.width >= 400 && rect.width <= 1400 && rect.height >= 150 && rect.height <= 900);
+                if (modalLike) {
+                  node.remove();
+                  return true;
+                }
+                node = node.parentElement;
+              }
+            }
+            return false;
+          };
+          closeByText('상품 배송 안내');
+          closeByText('방문결제 제한 상품 안내');
+          hideLayerByText('상품 배송 안내');
+          hideLayerByText('방문결제 제한 상품 안내');
+          removeLayerByText('상품 배송 안내');
+          removeLayerByText('방문결제 제한 상품 안내');
+          for (const selector of ['#chgOrderInfoLayer', '.chgOrderInfoLayer']) {
+            const modal = document.querySelector(selector);
+            if (modal) {
+              modal.style.display = 'none';
+              modal.setAttribute('aria-hidden', 'true');
+            }
+          }
+          document.body.style.overflow = 'unset';
+          const stickySummary = document.querySelector('.totalS_wrap');
+          if (stickySummary) {
+            stickySummary.style.zIndex = '10';
+          }
+        }
+        """
+    )
+
+
+def _click_final_order(page) -> None:
+    selectors = [
+        "button:has-text('바로 결제하기')",
+        "a:has-text('바로 결제하기')",
+        "input[value*='바로 결제하기']",
+        "button:has-text('결제하기')",
+        "button:has-text('주문하기')",
+        "a:has-text('결제하기')",
+        "a:has-text('주문하기')",
+        "input[value*='결제']",
+        "input[value*='주문']",
+    ]
+    _dismiss_order_info_modal(page)
+    _click_first(page, selectors, "최종 주문 버튼을 찾지 못했습니다.")
+    page.wait_for_timeout(1500)
+    if _body_contains(page, "상품 배송 안내"):
+        _dismiss_order_info_modal(page)
+        page.wait_for_timeout(500)
+        _click_first(page, selectors, "최종 주문 버튼을 찾지 못했습니다.")
+
+
+def _checkbox_context_text(locator) -> str:
+    return locator.evaluate(
+        """
+        el => {
+          const chunks = [];
+          if (el.id && window.CSS && CSS.escape) {
+            const label = document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
+            if (label) chunks.push(label.innerText || label.textContent || '');
+          }
+
+          const label = el.closest('label');
+          if (label) chunks.push(label.innerText || label.textContent || '');
+
+          let node = el.parentElement;
+          for (let i = 0; node && i < 3; i += 1) {
+            chunks.push(node.innerText || node.textContent || '');
+            for (const sibling of [node.previousElementSibling, node.nextElementSibling]) {
+              if (sibling) chunks.push(sibling.innerText || sibling.textContent || '');
+            }
+            node = node.parentElement;
+          }
+          return chunks.join('\\n');
+        }
+        """
+    )
+
+
+def _check_checkbox_by_keywords(page, keyword_groups: list[list[str]], error_message: str) -> None:
+    for locator in page.locator("input[type='checkbox']").all():
+        try:
+            context = _checkbox_context_text(locator)
+            normalized = _normalize_text(context)
+            if not any(all(_normalize_text(keyword) in normalized for keyword in group) for group in keyword_groups):
+                continue
+            _set_checkbox(locator)
+            return
+        except Exception:
+            continue
+    raise RuntimeError(error_message)
+
+
+def _set_checkbox(locator) -> None:
+    try:
+        locator.scroll_into_view_if_needed(timeout=1000)
+    except Exception:
+        pass
+    try:
+        if locator.is_checked(timeout=500):
+            return
+    except Exception:
+        pass
+    try:
+        locator.check(timeout=1000, force=True)
+        return
+    except Exception:
+        pass
+    locator.evaluate(
+        """
+        el => {
+          if (!el.checked) {
+            el.click();
+          }
+          if (!el.checked) {
+            el.checked = true;
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+          }
+        }
+        """
+    )
+
+
+def _check_invoice_options(page) -> None:
+    _check_checkbox_by_keywords(
+        page,
+        [
+            ["세금계산서", "발행", "정보"],
+            ["세금계산서", "정보", "확인"],
+        ],
+        "세금계산서 정보 확인 체크박스를 찾지 못했습니다.",
+    )
+    _check_checkbox_by_keywords(
+        page,
+        [
+            ["온라인", "견적서", "이메일"],
+            ["온라인", "견적서", "수신"],
+        ],
+        "온라인 견적서 이메일 수신 체크박스를 찾지 못했습니다.",
+    )
+
+
 def _check_required_agreements(page) -> None:
     for locator in page.locator("input[type='checkbox']").all():
         try:
-            if locator.is_enabled(timeout=500) and not locator.is_checked(timeout=500):
-                locator.check(timeout=500)
+            context = _checkbox_context_text(locator)
+            normalized = _normalize_text(context)
+            should_check = (
+                "필수" in normalized
+                or "주문내용을확인" in normalized
+                or ("정보제공" in normalized and "동의" in normalized)
+            )
+            if should_check and locator.is_enabled(timeout=500):
+                _set_checkbox(locator)
         except Exception:
             continue
 
@@ -240,7 +1039,7 @@ def _extract_amount(text: str) -> int | None:
 
 def _download_quote_pdf(page, order_no: str, settings: Settings, job: PurchaseJob) -> Path:
     quote_url = settings.compuzone_quote_url_template.format(order_no=order_no)
-    quote_path = _job_artifact_dir(job, settings) / f"compuzone_quote_{order_no}.pdf"
+    quote_path = _quote_pdf_path(job, settings, order_no)
     quote_path.parent.mkdir(parents=True, exist_ok=True)
     response = page.goto(quote_url, wait_until="networkidle", timeout=60000)
     if response is not None:
@@ -249,4 +1048,74 @@ def _download_quote_pdf(page, order_no: str, settings: Settings, job: PurchaseJo
         if body.startswith(b"%PDF") or "pdf" in content_type.lower():
             quote_path.write_bytes(body)
             return quote_path
-    raise RuntimeError("주문번호 기반 견적서 PDF 저장에 실패했습니다. 견적서 URL 템플릿을 확인해 주세요.")
+
+    quote_page = _open_quote_print_page(page)
+    _assert_quote_page_accessible(quote_page, order_no)
+    _save_page_as_pdf(quote_page, quote_path)
+    if not quote_path.exists() or quote_path.stat().st_size < 1024:
+        raise RuntimeError(f"컴퓨존 견적서 PDF 저장 결과가 비어 있습니다: {quote_path}")
+    return quote_path
+
+
+def _quote_pdf_path(job: PurchaseJob, settings: Settings, order_no: str) -> Path:
+    return _job_artifact_dir(job, settings) / f"견적서 - 컴퓨존({order_no}).pdf"
+
+
+def _open_quote_print_page(page):
+    for selector in (
+        "button:has-text('출력하기')",
+        "a:has-text('출력하기')",
+        "input[type='button'][value*='출력']",
+        "button:has-text('출력')",
+        "a:has-text('출력')",
+    ):
+        button = page.locator(selector).first
+        try:
+            if not button.is_visible(timeout=1000):
+                continue
+            try:
+                with page.context.expect_page(timeout=5000) as popup_info:
+                    button.click(timeout=2000)
+                popup = popup_info.value
+                popup.wait_for_load_state("networkidle", timeout=30000)
+                return popup
+            except Exception:
+                button.click(timeout=2000)
+                page.wait_for_load_state("networkidle", timeout=30000)
+                return page
+        except Exception:
+            continue
+    return page
+
+
+def _assert_quote_page_accessible(page, order_no: str) -> None:
+    try:
+        text = page.locator("body").inner_text(timeout=5000)
+    except Exception:
+        text = ""
+    compact = re.sub(r"\D+", "", text)
+    deny_tokens = ("권한", "접근", "존재하지", "조회된", "잘못", "로그인")
+    if order_no not in compact and any(token in text for token in deny_tokens):
+        raise RuntimeError("컴퓨존 견적서 페이지 접근이 거부되었거나 조회에 실패했습니다.")
+
+
+def _save_page_as_pdf(page, output_path: Path) -> None:
+    try:
+        page.emulate_media(media="print")
+    except Exception:
+        pass
+    session = page.context.new_cdp_session(page)
+    payload = session.send(
+        "Page.printToPDF",
+        {
+            "printBackground": True,
+            "paperWidth": 8.27,
+            "paperHeight": 11.69,
+            "marginTop": 0.2,
+            "marginBottom": 0.2,
+            "marginLeft": 0.2,
+            "marginRight": 0.2,
+            "preferCSSPageSize": True,
+        },
+    )
+    output_path.write_bytes(base64.b64decode(payload["data"]))

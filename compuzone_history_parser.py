@@ -40,7 +40,7 @@ YEARS = (2026, 2025, 2024)
 TARGET_STATUSES = ("상품발송", "배송완료")
 ORDERS_PER_PAGE = 5
 URL_FIELD = "상품URL"
-NORMALIZATION_RULE_VERSION = 6
+NORMALIZATION_RULE_VERSION = 7
 DESKTOP_SPLIT_VERSION = 1
 DEFAULT_ACCOUNTS = ("ds1500", "reum0009")
 DESKTOP_PC_CATEGORIES = {"데스크탑PC", "CAD PC", "사무용 PC"}
@@ -206,6 +206,25 @@ SPEC_MODEL_WORDS = (
     "포트",
     "mbps",
     "gbps",
+)
+
+ATTRIBUTE_ONLY_MODEL_PATTERN = re.compile(
+    r"^\d+(?:\.\d+)?\s*(?:GB|TB|MB|W|V|A|M|CM|MM|KM|HZ|BIT|RPM|MAH|PORT|포트|형|인치)$",
+    flags=re.IGNORECASE,
+)
+PROTOCOL_VERSION_PATTERN = re.compile(
+    r"^(?:DDR|USB|HDMI|DP|SATA|PCIE|PCI-E)\s*\d+(?:\.\d+)?$",
+    flags=re.IGNORECASE,
+)
+MODEL_CODE_PATTERNS = (
+    r"\b(PC[45]-\d{4,6})\b",
+    r"\b(TB\d+(?:-\d+(?:\.\d+)?M)?)\b",
+    r"\b(MTF\d{2,4})\b",
+    r"\b(WC\d{2,4})\b",
+    r"\b(CEM\d{2,4})\b",
+    r"\b(MC-\d{2,4})\b",
+    r"\b(HANDS\d*)\b",
+    r"\b(APL-[A-Z0-9-]+)\b",
 )
 
 
@@ -848,6 +867,47 @@ def cleanup_model_token(token: str) -> str:
     return token
 
 
+def is_attribute_only_model_token(token: str) -> bool:
+    cleaned = normalize_space(cleanup_model_token(token))
+    compact = re.sub(r"\s+", "", cleaned)
+    if ATTRIBUTE_ONLY_MODEL_PATTERN.fullmatch(cleaned) or ATTRIBUTE_ONLY_MODEL_PATTERN.fullmatch(compact):
+        return True
+    if PROTOCOL_VERSION_PATTERN.fullmatch(cleaned) or PROTOCOL_VERSION_PATTERN.fullmatch(compact):
+        return True
+    return False
+
+
+def first_model_code(text: str) -> str | None:
+    for pattern in MODEL_CODE_PATTERNS:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            return normalize_space(match.group(1)).upper()
+    return None
+
+
+def extract_memory_model_name(text: str) -> str | None:
+    pc_code = first_regex_group(text, (r"\b(PC[45]-\d{4,6})\b",))
+    if not pc_code:
+        return None
+    capacity = first_regex_group(text, (r"\[(\d+(?:\.\d+)?\s*(?:GB|TB))\]", r"\b(\d+(?:\.\d+)?\s*(?:GB|TB))\b"))
+    speed = first_regex_group(text, (r"\((\d{4,5})\)",))
+    parts = [pc_code.upper()]
+    if capacity:
+        parts.append(capacity.replace(" ", "").upper())
+    if speed:
+        parts.append(f"({speed})")
+    return normalize_space(" ".join(parts))
+
+
+def strip_brand_and_promotions(value: str) -> str:
+    text = strip_leading_brand(value)
+    text = re.sub(r"색상선택\|.*$", "", text)
+    text = re.sub(r"\s+★.*$", "", text)
+    text = re.sub(r"\s+※.*$", "", text)
+    text = re.sub(r"▶.*?◀", "", text)
+    return normalize_space(text)
+
+
 def extract_desktop_model_name(value: str) -> str | None:
     return first_regex_group(
         value,
@@ -902,6 +962,8 @@ def is_model_token(token: str) -> bool:
     cleaned = cleanup_model_token(token)
     if len(cleaned) < 3:
         return False
+    if is_attribute_only_model_token(cleaned):
+        return False
     if is_spec_token(cleaned):
         return False
     compact = re.sub(r"[^0-9A-Za-z]+", "", cleaned)
@@ -911,7 +973,9 @@ def is_model_token(token: str) -> bool:
         return False
     if compact.upper() in MODEL_EXCLUDE_TOKENS:
         return False
-    if re.fullmatch(r"\d+(?:GB|TB|MB|W|V|A|M|CM|MM|KM|HZ|BIT|RPM|MAH|PORT|포트|형)", cleaned, flags=re.IGNORECASE):
+    if re.fullmatch(r"\d+(?:\.\d+)?(?:GB|TB|MB|W|V|A|M|CM|MM|KM|HZ|BIT|RPM|MAH|PORT|포트|형|인치)", cleaned, flags=re.IGNORECASE):
+        return False
+    if re.fullmatch(r"(?:DDR|USB|HDMI|DP|SATA|PCIE|PCI-E)\d+(?:\.\d+)?", compact, flags=re.IGNORECASE):
         return False
     return True
 
@@ -925,11 +989,15 @@ def first_regex_group(text: str, patterns: tuple[str, ...]) -> str | None:
 
 
 def extract_model_name(value: str) -> str:
-    text = strip_leading_brand(value)
-    text = re.sub(r"색상선택\|.*$", "", text)
-    text = re.sub(r"\s+★.*$", "", text)
-    text = re.sub(r"\s+※.*$", "", text)
-    text = re.sub(r"▶.*?◀", "", text)
+    text = strip_brand_and_promotions(value)
+
+    memory_model = extract_memory_model_name(text)
+    if memory_model:
+        return memory_model
+
+    explicit_model = first_model_code(text)
+    if explicit_model:
+        return explicit_model
 
     bracket_tokens = re.findall(r"\[([^\]]+)\]", text)
     for token in bracket_tokens:
@@ -987,10 +1055,10 @@ def extract_model_name(value: str) -> str:
         if is_model_token(cleaned):
             return cleaned
 
-    text = re.sub(r"\[[^\]]+\]", "", text)
-    text = re.sub(r"\([^)]*\)", "", text)
-    text = re.sub(r"\s+\|.*$", "", text)
-    return normalize_space(text)
+    fallback = re.sub(r"\[[^\]]+\]", "", text)
+    fallback = re.sub(r"\([^)]*\)", "", fallback)
+    fallback = re.sub(r"\s+\|.*$", "", fallback)
+    return normalize_space(fallback)
 
 
 def parse_order_status(value: str) -> str:

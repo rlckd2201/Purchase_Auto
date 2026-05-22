@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from . import db
-from .compuzone_order import run_compuzone_order
+from .compuzone_order import QuoteDownloadError, run_compuzone_order
 from .config import Settings, load_settings
 from .corps import get_corp
 from .groupware_approval import submit_groupware_approval
@@ -61,6 +61,23 @@ def run_compuzone_order_step(job_id: str, settings: Settings | None = None) -> P
         )
         db.append_log(cfg.db_path, job_id, f"컴퓨존 견적서 PDF를 저장했습니다: {result.quote_pdf_path}")
         return get_purchase_job(updated.job_id, cfg)
+    except QuoteDownloadError as exc:
+        db.update_job(
+            cfg.db_path,
+            job_id,
+            status=PurchaseStatus.ORDER_SUBMITTED_PENDING_PAYMENT,
+            order_no=exc.order_no,
+            amount=exc.amount,
+            item_summary=exc.item_summary,
+            error_message=str(exc),
+        )
+        db.append_log(
+            cfg.db_path,
+            job_id,
+            f"컴퓨존 주문은 생성되었지만 견적서 PDF 저장에 실패했습니다. 주문번호: {exc.order_no}",
+            level="error",
+        )
+        raise
     except Exception as exc:
         db.set_failed(cfg.db_path, job_id, str(exc))
         raise
@@ -89,6 +106,7 @@ def submit_approval_step(job_id: str, settings: Settings | None = None) -> Purch
             status=PurchaseStatus.APPROVAL_SUBMITTED,
             approval_document_id=result.document_id,
             approval_document_url=result.document_url,
+            error_message=None,
         )
         db.append_log(cfg.db_path, job_id, f"그룹웨어 품의가 상신되었습니다: {result.document_url}")
         updated = db.update_job(cfg.db_path, job_id, status=PurchaseStatus.WAITING_TAX_INVOICE)
