@@ -11,6 +11,7 @@ from purchase_auto.compuzone_order import (
     _cart_visible_product_count,
     _factory_business_number,
     _job_tax_business_selection,
+    _raise_if_product_unavailable,
 )
 from purchase_auto.groupware_approval import (
     _approval_body_html,
@@ -253,3 +254,28 @@ def test_cart_visible_product_count_reads_compuzone_delivery_count() -> None:
     body = "장바구니\n컴퓨존 배송상품 2\n상품명/옵션\n주문하기"
 
     assert _cart_visible_product_count(body) == 2
+
+
+class _FakeProductPage:
+    def __init__(self, status: dict[str, object]) -> None:
+        self._status = status
+
+    def evaluate(self, _script: str) -> dict[str, object]:
+        return self._status
+
+
+def test_compuzone_unavailable_product_reports_sold_out() -> None:
+    page = _FakeProductPage(
+        {
+            "hasOrderControl": False,
+            "hasSoldOutControl": True,
+            "bodyText": "총 합계 금액 2,340원 품절",
+        }
+    )
+    item = PurchaseItem(
+        url="https://www.compuzone.co.kr/product/product_detail.htm?ProductNo=960306",
+        quantity=1,
+    )
+
+    with pytest.raises(RuntimeError, match="상품번호=960306"):
+        _raise_if_product_unavailable(page, item)

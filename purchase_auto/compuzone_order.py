@@ -164,6 +164,7 @@ def _open_cart_order_page(page, job: PurchaseJob, settings: Settings) -> None:
         page.goto(item.url, wait_until="domcontentloaded", timeout=60000)
         _raise_if_login_required(page)
         product_markers = _product_markers_from_page(page)
+        _raise_if_product_unavailable(page, item)
         _set_quantity(page, item.quantity)
         _click_first(
             page,
@@ -262,6 +263,41 @@ def _product_markers_from_page(page) -> list[str]:
             if len(token) >= 4 and any(ch.isdigit() for ch in token) and token not in markers:
                 markers.append(token)
     return markers[:8]
+
+
+def _raise_if_product_unavailable(page, item) -> None:
+    try:
+        status = page.evaluate(
+            """
+            () => {
+              const visible = element => {
+                const style = window.getComputedStyle(element);
+                const rect = element.getBoundingClientRect();
+                return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+              };
+              const controls = Array.from(document.querySelectorAll(
+                '.total_price .btn_area a, .total_price .btn_area button, .total_price .btn_area input, ' +
+                '.btn_area a, .btn_area button, .btn_area input'
+              )).filter(visible);
+              const controlText = controls.map(el => String(el.innerText || el.value || el.textContent || '').replace(/\\s+/g, ' ').trim());
+              const hasOrderControl = controlText.some(text => /장바구니|담기|구매|주문/.test(text));
+              const hasSoldOutControl = controlText.some(text => /^품절$|품절/.test(text));
+              const bodyText = String(document.body ? document.body.innerText || '' : '');
+              return { hasOrderControl, hasSoldOutControl, bodyText };
+            }
+            """
+        )
+    except Exception:
+        return
+
+    body_text = str(status.get("bodyText", ""))
+    is_unavailable = bool(status.get("hasSoldOutControl")) and not bool(status.get("hasOrderControl"))
+    if not is_unavailable and "품절" in body_text and "장바구니" not in body_text and "구매하기" not in body_text:
+        is_unavailable = True
+    if is_unavailable:
+        product_no = _product_no_from_url(item.url)
+        detail = f"상품번호={product_no} " if product_no else ""
+        raise RuntimeError(f"컴퓨존 상품이 품절이라 구매할 수 없습니다: {detail}{item.url}")
 
 
 def _confirm_cart_add(page, settings: Settings, item, expected_count: int, expected_marker_groups: list[list[str]]) -> None:
