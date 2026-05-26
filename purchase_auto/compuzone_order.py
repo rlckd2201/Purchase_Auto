@@ -19,6 +19,23 @@ class LoginRequiredError(RuntimeError):
     pass
 
 
+class SoldOutProductError(RuntimeError):
+    code = "SOLD_OUT_PRODUCT"
+
+    def __init__(self, message: str, product_no: str, product_url: str) -> None:
+        super().__init__(message)
+        self.product_no = product_no
+        self.product_url = product_url
+
+    def as_detail(self) -> dict[str, str]:
+        return {
+            "code": self.code,
+            "message": str(self),
+            "product_no": self.product_no,
+            "product_url": self.product_url,
+        }
+
+
 class QuoteDownloadError(RuntimeError):
     def __init__(self, message: str, order_no: str, amount: int | None, item_summary: str) -> None:
         super().__init__(message)
@@ -297,7 +314,11 @@ def _raise_if_product_unavailable(page, item) -> None:
     if is_unavailable:
         product_no = _product_no_from_url(item.url)
         detail = f"상품번호={product_no} " if product_no else ""
-        raise RuntimeError(f"컴퓨존 상품이 품절이라 구매할 수 없습니다: {detail}{item.url}")
+        raise SoldOutProductError(
+            f"컴퓨존 상품이 품절이라 구매할 수 없습니다: {detail}{item.url}",
+            product_no,
+            item.url,
+        )
 
 
 def _confirm_cart_add(page, settings: Settings, item, expected_count: int, expected_marker_groups: list[list[str]]) -> None:

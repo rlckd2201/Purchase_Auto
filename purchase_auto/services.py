@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from . import db
-from .compuzone_order import QuoteDownloadError, run_compuzone_order
+from .compuzone_order import QuoteDownloadError, SoldOutProductError, run_compuzone_order
 from .config import Settings, load_settings
 from .corps import get_corp
 from .groupware_approval import submit_groupware_approval
@@ -77,6 +77,9 @@ def run_compuzone_order_step(job_id: str, settings: Settings | None = None) -> P
             f"컴퓨존 주문은 생성되었지만 견적서 PDF 저장에 실패했습니다. 주문번호: {exc.order_no}",
             level="error",
         )
+        raise
+    except SoldOutProductError as exc:
+        db.set_failed(cfg.db_path, job_id, str(exc))
         raise
     except Exception as exc:
         db.set_failed(cfg.db_path, job_id, str(exc))
