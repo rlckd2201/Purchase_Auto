@@ -8,10 +8,12 @@ import pytest
 
 from purchase_auto.config import Settings
 from purchase_auto.compuzone_order import (
+    CompuzoneProductLine,
     SoldOutProductError,
     _cart_visible_product_count,
     _dialog_excerpt,
     _factory_business_number,
+    _item_summary,
     _job_tax_business_selection,
     _raise_if_dialog_blocked_order,
     _raise_if_product_unavailable,
@@ -164,6 +166,72 @@ def test_consumable_approval_body_omits_no_shipping_row() -> None:
     assert "\uc6b4\ubc18\ub8cc" not in body
     assert "\uc5c6\uc74c" not in body
     assert "\uad6c\ub9e4\ub0b4\uc5ed" in body
+
+
+def test_compuzone_item_summary_keeps_each_product_line() -> None:
+    now = datetime.now(timezone.utc)
+    job = PurchaseJob(
+        job_id="job",
+        corp="\ub300\uc2b9\uc815\ubc00",
+        corp_code="daeseung_precision",
+        status=PurchaseStatus.CREATED,
+        items=[
+            PurchaseItem(url="https://www.compuzone.co.kr/product/product_detail.htm?ProductNo=960306", quantity=1),
+            PurchaseItem(url="https://www.compuzone.co.kr/product/product_detail.htm?ProductNo=1087083", quantity=1),
+        ],
+        created_at=now,
+        updated_at=now,
+    )
+
+    summary = _item_summary(
+        job,
+        [
+            CompuzoneProductLine("[케이엘시스템] 블루투스동글 KL-BTD50", 1, 2280, 2280, "960306"),
+            CompuzoneProductLine("[이지넷유비쿼터스] 블루투스 동글 NEXT-304BT", 1, 4210, 4210, "1087083"),
+        ],
+    )
+
+    assert "1\ubc88 \uc0c1\ud488" not in summary
+    assert "KL-BTD50\t1\t2280\t2280" in summary
+    assert "NEXT-304BT\t1\t4210\t4210" in summary
+
+
+def test_consumable_approval_body_expands_product_line_summary() -> None:
+    now = datetime.now(timezone.utc)
+    summary = "\n".join(
+        [
+            "[케이엘시스템] 블루투스동글 KL-BTD50\t1\t2280\t2280",
+            "[이지넷유비쿼터스] 블루투스 동글 NEXT-304BT\t1\t4210\t4210",
+        ]
+    )
+    job = PurchaseJob(
+        job_id="job",
+        corp="\ub300\uc2b9\uc815\ubc00",
+        corp_code="daeseung_precision",
+        status=PurchaseStatus.QUOTE_SAVED,
+        items=[
+            PurchaseItem(url="https://www.compuzone.co.kr/product/product_detail.htm?ProductNo=960306", quantity=1),
+            PurchaseItem(url="https://www.compuzone.co.kr/product/product_detail.htm?ProductNo=1087083", quantity=1),
+        ],
+        title="\uc804\uc0b0 \uc18c\ubaa8\ud488 \uad6c\ub9e4 \uac74(P3\uacf5\uc7a5)",
+        order_no="28174999",
+        amount=9490,
+        memo="P3\uacf5\uc7a5",
+        item_summary=summary,
+        created_at=now,
+        updated_at=now,
+    )
+
+    body = _approval_body_html(job)
+
+    assert "1\ubc88 \uc0c1\ud488" not in body
+    assert "KL-BTD50" in body
+    assert "NEXT-304BT" in body
+    assert body.find("NEXT-304BT") < body.find("KL-BTD50")
+    assert "\\4,210" in body
+    assert "\\2,280" in body
+    assert "\\3,000" in body
+    assert "\\12,665" not in body
 
 
 def test_asset_approval_body_uses_notebook_template_for_mixed_assets() -> None:

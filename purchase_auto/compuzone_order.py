@@ -53,6 +53,15 @@ class CompuzoneOrderResult:
     raw_status: str
 
 
+@dataclass(frozen=True)
+class CompuzoneProductLine:
+    name: str
+    quantity: int
+    unit_price: int | None = None
+    amount: int | None = None
+    product_no: str = ""
+
+
 def run_compuzone_order(job: PurchaseJob, settings: Settings | None = None) -> CompuzoneOrderResult:
     settings = settings or load_settings()
     if settings.dry_run:
@@ -66,8 +75,24 @@ def _job_artifact_dir(job: PurchaseJob, settings: Settings) -> Path:
     return settings.artifact_dir / job.job_id
 
 
-def _item_summary(job: PurchaseJob) -> str:
+def _item_summary(job: PurchaseJob, product_lines: list[CompuzoneProductLine] | None = None) -> str:
+    formatted = _format_product_lines(product_lines or [])
+    if formatted:
+        return formatted
     return ", ".join(f"{index + 1}번 상품 x {item.quantity}" for index, item in enumerate(job.items))
+
+
+def _format_product_lines(product_lines: list[CompuzoneProductLine]) -> str:
+    rows: list[str] = []
+    for line in product_lines:
+        name = re.sub(r"\s+", " ", line.name or "").strip()
+        quantity = line.quantity or 0
+        unit_price = line.unit_price
+        amount = line.amount if line.amount is not None else (unit_price * quantity if unit_price is not None else None)
+        if not name or quantity <= 0 or unit_price is None or amount is None:
+            continue
+        rows.append(f"{name}\t{quantity}\t{unit_price}\t{amount}")
+    return "\n".join(rows)
 
 
 def _dry_run_order(job: PurchaseJob, settings: Settings) -> CompuzoneOrderResult:
@@ -122,17 +147,18 @@ def _live_order(job: PurchaseJob, settings: Settings) -> CompuzoneOrderResult:
         try:
             _ensure_compuzone_session(page, settings)
             if len(job.items) == 1:
-                _open_single_item_order_page(page, job.items[0], dialog_messages)
+                product_lines = _open_single_item_order_page(page, job.items[0], dialog_messages)
             else:
-                _open_cart_order_page(page, job, settings, dialog_messages)
+                product_lines = _open_cart_order_page(page, job, settings, dialog_messages)
             _raise_if_login_required(page)
             _prepare_order_page(page, settings, job)
+            product_lines = _merge_product_lines(product_lines, _extract_order_page_product_lines(page, job))
             _click_final_order(page)
             page.wait_for_load_state("domcontentloaded", timeout=60000)
             body = page.locator("body").inner_text(timeout=10000)
             order_no = _extract_order_no(body)
             amount = _extract_amount(body)
-            item_summary = _item_summary(job)
+            item_summary = _item_summary(job, product_lines)
             try:
                 quote_path = _download_quote_pdf(page, order_no, settings, job)
             except Exception as exc:
@@ -164,10 +190,11 @@ def _save_debug_screenshot(page, job: PurchaseJob, settings: Settings, stem: str
         pass
 
 
-def _open_single_item_order_page(page, item, dialog_messages: list[str]) -> None:
+def _open_single_item_order_page(page, item, dialog_messages: list[str]) -> list[CompuzoneProductLine]:
     page.goto(item.url, wait_until="domcontentloaded", timeout=60000)
     _raise_if_login_required(page)
     _set_quantity(page, item.quantity)
+    product_line = _product_line_from_detail_page(page, item)
     dialog_start = len(dialog_messages)
     _click_first(
         page,
@@ -183,22 +210,32 @@ def _open_single_item_order_page(page, item, dialog_messages: list[str]) -> None
     page.wait_for_timeout(800)
     _raise_if_dialog_blocked_order(dialog_messages, dialog_start, item)
     page.wait_for_load_state("domcontentloaded", timeout=60000)
+    return [product_line] if product_line else []
 
 
-def _open_cart_order_page(page, job: PurchaseJob, settings: Settings, dialog_messages: list[str]) -> None:
+def _open_cart_order_page(
+    page,
+    job: PurchaseJob,
+    settings: Settings,
+    dialog_messages: list[str],
+) -> list[CompuzoneProductLine]:
     if settings.compuzone_clear_cart_before_order:
         _clear_cart(page, settings)
     expected_marker_groups: list[list[str]] = []
+    product_lines: list[CompuzoneProductLine] = []
     for item in job.items:
         page.goto(item.url, wait_until="domcontentloaded", timeout=60000)
         _raise_if_login_required(page)
         product_markers = _product_markers_from_page(page)
         _raise_if_product_unavailable(page, item)
         _set_quantity(page, item.quantity)
+        product_line = _product_line_from_detail_page(page, item)
         dialog_start = len(dialog_messages)
         cart_click = _click_add_to_cart(page)
         _raise_if_dialog_blocked_order(dialog_messages, dialog_start, item)
         expected_marker_groups.append(product_markers)
+        if product_line:
+            product_lines.append(product_line)
         _confirm_cart_add(
             page,
             settings,
@@ -234,6 +271,7 @@ def _open_cart_order_page(page, job: PurchaseJob, settings: Settings, dialog_mes
         "장바구니 주문 버튼을 찾지 못했습니다.",
     )
     page.wait_for_load_state("domcontentloaded", timeout=60000)
+    return product_lines
 
 
 def _product_no_from_url(url: str) -> str:
@@ -283,6 +321,258 @@ def _product_markers_from_page(page) -> list[str]:
             if len(token) >= 4 and any(ch.isdigit() for ch in token) and token not in markers:
                 markers.append(token)
     return markers[:8]
+
+
+def _product_line_from_detail_page(page, item) -> CompuzoneProductLine | None:
+    product_no = _product_no_from_url(item.url)
+    try:
+        raw = page.evaluate(
+            """
+            () => {
+              const normalize = value => String(value || '').replace(/\\s+/g, ' ').trim();
+              const cleanTitle = value => normalize(value)
+                .replace(/^컴퓨존\\s*[-–]\\s*/i, '')
+                .replace(/\\s*[-–]\\s*컴퓨존$/i, '');
+              const nameSelectors = [
+                'meta[property="og:title"]',
+                'meta[name="title"]',
+                'h1',
+                'h2',
+                '.prod_name',
+                '.product_name',
+                '.product-title',
+                '.product_title',
+                '[class*="product"][class*="name"]',
+                '[class*="prod"][class*="name"]'
+              ];
+              const names = [];
+              for (const selector of nameSelectors) {
+                for (const element of document.querySelectorAll(selector)) {
+                  const text = cleanTitle(element.getAttribute('content') || element.innerText || element.textContent || '');
+                  if (text && !names.includes(text)) names.push(text);
+                }
+              }
+              if (document.title) {
+                const title = cleanTitle(document.title);
+                if (title && !names.includes(title)) names.push(title);
+              }
+
+              const roots = Array.from(document.querySelectorAll(
+                '.total_price, .prod_info, .product_info, .product-detail, .product_detail, .right_area, .goods_info, .prodInfo'
+              ));
+              const searchRoots = roots.length ? roots : [document.body];
+              const moneyValues = [];
+              const addMoney = text => {
+                for (const match of normalize(text).matchAll(/([0-9][0-9,]{2,})\\s*원/g)) {
+                  const value = Number(match[1].replace(/,/g, ''));
+                  if (Number.isFinite(value) && value > 0) moneyValues.push(value);
+                }
+              };
+              for (const root of searchRoots) {
+                const text = normalize(root.innerText || root.textContent || '');
+                if (/(판매가|상품가격|가격|금액|원)/.test(text)) addMoney(text);
+                for (const element of root.querySelectorAll('[class*="price"], [id*="price"], [class*="Price"], [id*="Price"], strong, em, span')) {
+                  addMoney(element.innerText || element.textContent || '');
+                }
+              }
+              return { name: names[0] || '', prices: moneyValues };
+            }
+            """
+        )
+    except Exception:
+        raw = {}
+
+    name = _clean_summary_name(str(raw.get("name") or ""))
+    if not name:
+        markers = _product_markers_from_page(page)
+        name = _clean_summary_name(markers[0]) if markers else ""
+    if not name:
+        name = f"상품번호 {product_no}" if product_no else ""
+
+    unit_price = _choose_unit_price(raw.get("prices") or [], item.quantity)
+    amount = unit_price * item.quantity if unit_price is not None else None
+    if not name:
+        return None
+    return CompuzoneProductLine(
+        name=name,
+        quantity=item.quantity,
+        unit_price=unit_price,
+        amount=amount,
+        product_no=product_no,
+    )
+
+
+def _extract_order_page_product_lines(page, job: PurchaseJob) -> list[CompuzoneProductLine]:
+    try:
+        raw_lines = page.evaluate(
+            """
+            () => {
+              const normalize = value => String(value || '').replace(/\\s+/g, ' ').trim();
+              const productNoOf = href => {
+                const match = String(href || '').match(/(?:ProductNo|product_no|productNo)=([0-9]+)/i);
+                return match ? match[1] : '';
+              };
+              const moneyValues = text => Array.from(normalize(text).matchAll(/([0-9][0-9,]{2,})\\s*원/g))
+                .map(match => Number(match[1].replace(/,/g, '')))
+                .filter(value => Number.isFinite(value) && value > 0);
+              const quantityOf = (root, fallback) => {
+                for (const input of root.querySelectorAll('input')) {
+                  const raw = String(input.value || input.getAttribute('value') || '').trim();
+                  if (/^[0-9]+$/.test(raw)) return Number(raw);
+                }
+                const text = normalize(root.innerText || root.textContent || '');
+                const patterns = [
+                  /수량\\s*[:：]?\\s*([0-9]+)/,
+                  /([0-9]+)\\s*EA/i,
+                  /([0-9]+)\\s*개/
+                ];
+                for (const pattern of patterns) {
+                  const match = text.match(pattern);
+                  if (match) return Number(match[1]);
+                }
+                return fallback || 1;
+              };
+              const nameFromContext = (root, anchorText) => {
+                const anchorName = normalize(anchorText);
+                if (anchorName && !/^(이미지|상품 페이지|상세보기)$/.test(anchorName)) return anchorName;
+                const lines = normalize(root.innerText || root.textContent || '')
+                  .split(/\\n| {2,}/)
+                  .map(normalize)
+                  .filter(Boolean);
+                return lines.find(line =>
+                  !/(주문번호|주문일|수량|금액|배송|결제|적립|바로주문|삭제|선택)/.test(line) &&
+                  !/[0-9,]+\\s*원/.test(line)
+                ) || '';
+              };
+              const containerFor = anchor => {
+                let node = anchor;
+                let best = anchor.closest('tr, li') || anchor.parentElement || anchor;
+                for (let depth = 0; node && depth < 8; depth += 1) {
+                  const text = normalize(node.innerText || node.textContent || '');
+                  if (text.includes('원') && /(수량|상품|가격|주문|금액)/.test(text) && text.length < 1600) {
+                    best = node;
+                    break;
+                  }
+                  node = node.parentElement;
+                }
+                return best;
+              };
+
+              const seen = new Set();
+              const lines = [];
+              for (const anchor of Array.from(document.querySelectorAll('a[href*="product_detail"], a[href*="ProductNo"]'))) {
+                const href = anchor.href || anchor.getAttribute('href') || '';
+                const productNo = productNoOf(href);
+                const root = containerFor(anchor);
+                const text = normalize(root.innerText || root.textContent || '');
+                const values = moneyValues(text);
+                const quantity = quantityOf(root, 1);
+                let amount = null;
+                let unitPrice = null;
+                if (values.length) {
+                  const sorted = [...values].sort((a, b) => a - b);
+                  amount = sorted[sorted.length - 1];
+                  unitPrice = quantity > 1 && amount % quantity === 0 ? amount / quantity : sorted[0];
+                }
+                const name = nameFromContext(root, anchor.innerText || anchor.textContent || anchor.title || '');
+                const key = `${productNo || name}|${quantity}|${unitPrice || ''}|${amount || ''}`;
+                if (!name || seen.has(key)) continue;
+                seen.add(key);
+                lines.push({ name, quantity, unitPrice, amount, productNo });
+              }
+              return lines;
+            }
+            """
+        )
+    except Exception:
+        return []
+
+    requested_product_nos = [_product_no_from_url(item.url) for item in job.items]
+    requested_product_no_set = {value for value in requested_product_nos if value}
+    raw_candidates = list(raw_lines or [])
+    if requested_product_no_set:
+        raw_candidates = [
+            raw
+            for raw in raw_candidates
+            if str(raw.get("productNo") or "") in requested_product_no_set
+        ]
+
+    requested_quantities = [item.quantity for item in job.items]
+    lines: list[CompuzoneProductLine] = []
+    for index, raw in enumerate(raw_candidates):
+        name = _clean_summary_name(str(raw.get("name") or ""))
+        quantity = _parse_money_value(raw.get("quantity")) or (
+            requested_quantities[index] if index < len(requested_quantities) else 1
+        )
+        unit_price = _parse_money_value(raw.get("unitPrice"))
+        amount = _parse_money_value(raw.get("amount"))
+        if amount is not None and unit_price is None and quantity:
+            unit_price = amount // quantity
+        if unit_price is not None and amount is None:
+            amount = unit_price * quantity
+        if not name or quantity <= 0:
+            continue
+        lines.append(
+            CompuzoneProductLine(
+                name=name,
+                quantity=quantity,
+                unit_price=unit_price,
+                amount=amount,
+                product_no=str(raw.get("productNo") or ""),
+            )
+        )
+
+    if len(lines) < len(job.items):
+        return []
+    return lines[: len(job.items)]
+
+
+def _merge_product_lines(
+    detail_lines: list[CompuzoneProductLine],
+    order_page_lines: list[CompuzoneProductLine],
+) -> list[CompuzoneProductLine]:
+    if _format_product_lines(order_page_lines):
+        return order_page_lines
+    return detail_lines
+
+
+def _clean_summary_name(value: str) -> str:
+    text = re.sub(r"\s+", " ", value or "").strip()
+    text = re.sub(r"^\s*컴퓨존\s*[-–]\s*", "", text)
+    text = re.sub(r"\s*[-–]\s*컴퓨존\s*$", "", text)
+    return text.strip()
+
+
+def _parse_money_value(value) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, (int, float)) and value >= 0:
+        return int(value)
+    digits = re.sub(r"[^\d-]", "", str(value))
+    if not digits or digits == "-":
+        return None
+    parsed = int(digits)
+    return parsed if parsed >= 0 else None
+
+
+def _choose_unit_price(values, quantity: int) -> int | None:
+    prices = sorted(
+        {
+            parsed
+            for parsed in (_parse_money_value(value) for value in (values or []))
+            if parsed is not None and parsed >= 300
+        }
+    )
+    if not prices:
+        return None
+    if quantity > 1:
+        price_set = set(prices)
+        for price in prices:
+            if price * quantity in price_set:
+                return price
+        if len(prices) == 1 and prices[0] % quantity == 0:
+            return prices[0] // quantity
+    return prices[0]
 
 
 def _click_add_to_cart(page) -> dict[str, object]:
