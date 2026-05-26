@@ -44,6 +44,7 @@ def _settings(tmp_path: Path) -> Settings:
         groupware_profile_dir=tmp_path / "profiles" / "groupware",
         compuzone_cdp_url="",
         groupware_cdp_url="",
+        allow_existing_browser_cdp=False,
         compuzone_login_id="",
         compuzone_login_password="",
         groupware_login_id="",

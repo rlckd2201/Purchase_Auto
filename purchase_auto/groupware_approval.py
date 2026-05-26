@@ -68,7 +68,7 @@ def _live_submit(job: PurchaseJob, settings: Settings) -> ApprovalResult:
     settings.groupware_profile_dir.mkdir(parents=True, exist_ok=True)
     with sync_playwright() as p:
         close_context = True
-        if settings.groupware_cdp_url:
+        if settings.groupware_cdp_url and settings.allow_existing_browser_cdp:
             browser = p.chromium.connect_over_cdp(settings.groupware_cdp_url)
             context = browser.contexts[0] if browser.contexts else browser.new_context(accept_downloads=True)
             close_context = False

@@ -47,6 +47,7 @@ class Settings:
     groupware_profile_dir: Path
     compuzone_cdp_url: str
     groupware_cdp_url: str
+    allow_existing_browser_cdp: bool
     compuzone_login_id: str
     compuzone_login_password: str
     groupware_login_id: str
@@ -77,6 +78,7 @@ def load_settings() -> Settings:
         groupware_profile_dir=_path_env("PURCHASE_AUTO_GROUPWARE_PROFILE_DIR", ".profiles/groupware"),
         compuzone_cdp_url=_env("PURCHASE_AUTO_COMPUZONE_CDP_URL", ""),
         groupware_cdp_url=_env("PURCHASE_AUTO_GROUPWARE_CDP_URL", ""),
+        allow_existing_browser_cdp=_bool_env("PURCHASE_AUTO_ALLOW_EXISTING_BROWSER_CDP", False),
         compuzone_login_id=_env("PURCHASE_AUTO_COMPUZONE_ID", _env("PURCHASE_AUTO_COMPUZONE_LOGIN_ID", "")),
         compuzone_login_password=_env("PURCHASE_AUTO_COMPUZONE_PASSWORD", _env("PURCHASE_AUTO_COMPUZONE_PW", "")),
         groupware_login_id=_env("PURCHASE_AUTO_GROUPWARE_ID", _env("PURCHASE_AUTO_GROUPWARE_LOGIN_ID", "")),

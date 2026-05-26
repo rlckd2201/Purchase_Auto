@@ -98,7 +98,7 @@ def _live_order(job: PurchaseJob, settings: Settings) -> CompuzoneOrderResult:
     with sync_playwright() as p:
         browser = None
         close_context = True
-        if settings.compuzone_cdp_url:
+        if settings.compuzone_cdp_url and settings.allow_existing_browser_cdp:
             browser = p.chromium.connect_over_cdp(settings.compuzone_cdp_url)
             context = browser.contexts[0] if browser.contexts else browser.new_context(accept_downloads=True)
             close_context = False
