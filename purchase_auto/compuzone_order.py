@@ -158,24 +158,40 @@ def _open_single_item_order_page(page, item) -> None:
 def _open_cart_order_page(page, job: PurchaseJob, settings: Settings) -> None:
     if settings.compuzone_clear_cart_before_order:
         _clear_cart(page, settings)
+    expected_product_nos: list[str] = []
+    expected_marker_groups: list[list[str]] = []
     for item in job.items:
+        product_no = _product_no_from_url(item.url)
         page.goto(item.url, wait_until="domcontentloaded", timeout=60000)
         _raise_if_login_required(page)
+        product_markers = _product_markers_from_page(page)
         _set_quantity(page, item.quantity)
         _click_first(
             page,
             [
                 "a.cart[onclick*='buy_direct']",
                 "a.cart[onclick*='option_insert']",
+                "a[onclick*='option_insert'][onclick*='cart']",
+                "a[onclick*='option_insert'][onclick*='Cart']",
+                "button[onclick*='option_insert'][onclick*='cart']",
+                "button[onclick*='option_insert'][onclick*='Cart']",
+                "a[onclick*='basket']",
+                "a[onclick*='Basket']",
+                "button[onclick*='basket']",
+                "button[onclick*='Basket']",
                 "button:has-text('장바구니')",
                 "a:has-text('장바구니')",
+                "button:has-text('담기')",
+                "a:has-text('담기')",
                 "input[value*='장바구니']",
                 "[onclick*='cart']",
             ],
             "장바구니 버튼을 찾지 못했습니다.",
         )
-        if not _wait_body_contains(page, "장바구니에 담겼습니다", timeout_ms=7000):
-            raise RuntimeError(f"상품이 장바구니에 담기지 않았습니다: {item.url}")
+        if product_no:
+            expected_product_nos.append(product_no)
+        expected_marker_groups.append(product_markers)
+        _confirm_cart_add(page, settings, item, expected_product_nos, expected_marker_groups)
 
     page.goto(settings.compuzone_cart_url, wait_until="domcontentloaded", timeout=60000)
     _raise_if_login_required(page)
@@ -200,6 +216,120 @@ def _open_cart_order_page(page, job: PurchaseJob, settings: Settings) -> None:
         "장바구니 주문 버튼을 찾지 못했습니다.",
     )
     page.wait_for_load_state("domcontentloaded", timeout=60000)
+
+
+def _product_no_from_url(url: str) -> str:
+    match = re.search(r"(?:ProductNo|product_no|productNo)=([0-9]+)", url)
+    return match.group(1) if match else ""
+
+
+def _product_markers_from_page(page) -> list[str]:
+    try:
+        values = page.evaluate(
+            """
+            () => {
+              const values = [];
+              for (const selector of [
+                'meta[property="og:title"]',
+                'meta[name="title"]',
+                'h1',
+                'h2',
+                '.prod_name',
+                '.product_name',
+                '.product-title',
+                '.product_title',
+                '[class*="product"][class*="name"]',
+                '[class*="prod"][class*="name"]'
+              ]) {
+                for (const element of document.querySelectorAll(selector)) {
+                  const text = element.getAttribute('content') || element.innerText || element.textContent || '';
+                  if (text.trim()) values.push(text.trim());
+                }
+              }
+              if (document.title) values.push(document.title);
+              return values;
+            }
+            """
+        )
+    except Exception:
+        values = []
+
+    markers: list[str] = []
+    for value in values:
+        cleaned = re.sub(r"\s+", " ", str(value)).strip()
+        cleaned = re.sub(r"^\s*컴퓨존\s*[-–]\s*", "", cleaned)
+        cleaned = re.sub(r"\s*[-–]\s*컴퓨존\s*$", "", cleaned)
+        if len(cleaned) >= 4 and cleaned not in markers:
+            markers.append(cleaned)
+        for token in re.findall(r"\b[A-Za-z0-9][A-Za-z0-9._+/-]{2,}\b", cleaned):
+            if len(token) >= 4 and any(ch.isdigit() for ch in token) and token not in markers:
+                markers.append(token)
+    return markers[:8]
+
+
+def _confirm_cart_add(
+    page,
+    settings: Settings,
+    item,
+    expected_product_nos: list[str],
+    expected_marker_groups: list[list[str]],
+) -> None:
+    page.wait_for_timeout(1200)
+    if _cart_page_contains_products(page, expected_product_nos, expected_marker_groups):
+        return
+
+    page.goto(settings.compuzone_cart_url, wait_until="domcontentloaded", timeout=60000)
+    _raise_if_login_required(page)
+    if _cart_page_contains_products(page, expected_product_nos, expected_marker_groups):
+        return
+
+    page.wait_for_timeout(1500)
+    page.reload(wait_until="domcontentloaded", timeout=60000)
+    _raise_if_login_required(page)
+    if _cart_page_contains_products(page, expected_product_nos, expected_marker_groups):
+        return
+
+    product_no = _product_no_from_url(item.url)
+    detail = f" 상품번호={product_no}" if product_no else ""
+    raise RuntimeError(f"상품이 장바구니에 담기지 않았습니다:{detail} {item.url}")
+
+
+def _cart_page_contains_products(
+    page,
+    expected_product_nos: list[str],
+    expected_marker_groups: list[list[str]],
+) -> bool:
+    if not expected_product_nos:
+        return _cart_has_any_item(page)
+    try:
+        html = page.content()
+    except Exception:
+        html = ""
+    try:
+        body = page.locator("body").inner_text(timeout=3000)
+    except Exception:
+        body = ""
+    haystack = f"{html}\n{body}"
+    normalized_haystack = _normalize_text(haystack)
+    if all(product_no in haystack for product_no in expected_product_nos):
+        return True
+    if expected_marker_groups and all(
+        any(_normalize_text(marker) in normalized_haystack for marker in marker_group)
+        for marker_group in expected_marker_groups
+    ):
+        return True
+    return False
+
+
+def _cart_has_any_item(page) -> bool:
+    try:
+        body = page.locator("body").inner_text(timeout=3000)
+    except Exception:
+        return False
+    normalized = _normalize_text(body)
+    if any(token in normalized for token in ("장바구니가비어", "상품이없", "담긴상품이없")):
+        return False
+    return "장바구니" in normalized and ("수량" in normalized or "주문" in normalized or "상품" in normalized)
 
 
 def _clear_cart(page, settings: Settings) -> None:
