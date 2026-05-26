@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .config import Settings, load_settings
+from .corps import CORPS
 from .models import PurchaseJob
 from .pdf import write_minimal_pdf
 
@@ -158,10 +159,8 @@ def _open_single_item_order_page(page, item) -> None:
 def _open_cart_order_page(page, job: PurchaseJob, settings: Settings) -> None:
     if settings.compuzone_clear_cart_before_order:
         _clear_cart(page, settings)
-    expected_product_nos: list[str] = []
     expected_marker_groups: list[list[str]] = []
     for item in job.items:
-        product_no = _product_no_from_url(item.url)
         page.goto(item.url, wait_until="domcontentloaded", timeout=60000)
         _raise_if_login_required(page)
         product_markers = _product_markers_from_page(page)
@@ -169,7 +168,6 @@ def _open_cart_order_page(page, job: PurchaseJob, settings: Settings) -> None:
         _click_first(
             page,
             [
-                "a.cart[onclick*='buy_direct']",
                 "a.cart[onclick*='option_insert']",
                 "a[onclick*='option_insert'][onclick*='cart']",
                 "a[onclick*='option_insert'][onclick*='Cart']",
@@ -188,13 +186,12 @@ def _open_cart_order_page(page, job: PurchaseJob, settings: Settings) -> None:
             ],
             "장바구니 버튼을 찾지 못했습니다.",
         )
-        if product_no:
-            expected_product_nos.append(product_no)
         expected_marker_groups.append(product_markers)
-        _confirm_cart_add(page, settings, item, expected_product_nos, expected_marker_groups)
+        _confirm_cart_add(page, settings, item, len(expected_marker_groups), expected_marker_groups)
 
     page.goto(settings.compuzone_cart_url, wait_until="domcontentloaded", timeout=60000)
     _raise_if_login_required(page)
+    _assert_cart_ready_for_order(page, len(job.items), expected_marker_groups)
     _click_first(
         page,
         [
@@ -267,26 +264,20 @@ def _product_markers_from_page(page) -> list[str]:
     return markers[:8]
 
 
-def _confirm_cart_add(
-    page,
-    settings: Settings,
-    item,
-    expected_product_nos: list[str],
-    expected_marker_groups: list[list[str]],
-) -> None:
+def _confirm_cart_add(page, settings: Settings, item, expected_count: int, expected_marker_groups: list[list[str]]) -> None:
     page.wait_for_timeout(1200)
-    if _cart_page_contains_products(page, expected_product_nos, expected_marker_groups):
+    if _cart_page_contains_products(page, expected_count, expected_marker_groups):
         return
 
     page.goto(settings.compuzone_cart_url, wait_until="domcontentloaded", timeout=60000)
     _raise_if_login_required(page)
-    if _cart_page_contains_products(page, expected_product_nos, expected_marker_groups):
+    if _cart_page_contains_products(page, expected_count, expected_marker_groups):
         return
 
     page.wait_for_timeout(1500)
     page.reload(wait_until="domcontentloaded", timeout=60000)
     _raise_if_login_required(page)
-    if _cart_page_contains_products(page, expected_product_nos, expected_marker_groups):
+    if _cart_page_contains_products(page, expected_count, expected_marker_groups):
         return
 
     product_no = _product_no_from_url(item.url)
@@ -296,29 +287,60 @@ def _confirm_cart_add(
 
 def _cart_page_contains_products(
     page,
-    expected_product_nos: list[str],
+    expected_count: int,
     expected_marker_groups: list[list[str]],
 ) -> bool:
-    if not expected_product_nos:
+    if expected_count <= 0:
         return _cart_has_any_item(page)
-    try:
-        html = page.content()
-    except Exception:
-        html = ""
     try:
         body = page.locator("body").inner_text(timeout=3000)
     except Exception:
         body = ""
-    haystack = f"{html}\n{body}"
-    normalized_haystack = _normalize_text(haystack)
-    if all(product_no in haystack for product_no in expected_product_nos):
+    normalized_body = _normalize_text(body)
+    visible_count = _cart_visible_product_count(body)
+    if visible_count is not None and visible_count < expected_count:
+        return False
+    if expected_marker_groups and not _cart_contains_marker_groups(normalized_body, expected_marker_groups):
+        return False
+    if visible_count is not None:
+        return visible_count >= expected_count
+    return _cart_has_any_item(page)
+
+
+def _assert_cart_ready_for_order(page, expected_count: int, expected_marker_groups: list[list[str]]) -> None:
+    try:
+        body = page.locator("body").inner_text(timeout=5000)
+    except Exception:
+        body = ""
+    visible_count = _cart_visible_product_count(body)
+    if visible_count is not None and visible_count < expected_count:
+        raise RuntimeError(f"장바구니 품목 수가 맞지 않습니다. 요청 {expected_count}건, 장바구니 {visible_count}건")
+    if not _cart_contains_marker_groups(_normalize_text(body), expected_marker_groups):
+        raise RuntimeError("장바구니에 요청한 상품이 모두 담겼는지 확인하지 못했습니다.")
+
+
+def _cart_contains_marker_groups(normalized_body: str, expected_marker_groups: list[list[str]]) -> bool:
+    non_empty_groups = [group for group in expected_marker_groups if group]
+    if not non_empty_groups:
         return True
-    if expected_marker_groups and all(
-        any(_normalize_text(marker) in normalized_haystack for marker in marker_group)
-        for marker_group in expected_marker_groups
-    ):
-        return True
-    return False
+    return all(
+        any(_normalize_text(marker) in normalized_body for marker in marker_group)
+        for marker_group in non_empty_groups
+    )
+
+
+def _cart_visible_product_count(body: str) -> int | None:
+    compact = _normalize_text(body)
+    patterns = (
+        r"컴퓨존배송상품\(?(\d+)\)?",
+        r"배송상품\(?(\d+)\)?",
+        r"장바구니상품\(?(\d+)\)?",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, compact)
+        if match:
+            return int(match.group(1))
+    return None
 
 
 def _cart_has_any_item(page) -> bool:
@@ -565,9 +587,33 @@ def _job_delivery_selection(job: PurchaseJob, settings: Settings) -> tuple[str, 
 
 
 def _job_tax_business_selection(job: PurchaseJob, settings: Settings) -> tuple[str, str]:
-    business_number = _memo_field(job, ("사업자번호", "business_number", "business_no")) or settings.compuzone_business_number
+    factory_business_number = _factory_business_number(job)
+    business_number = (
+        factory_business_number
+        or _memo_field(job, ("사업자번호", "business_number", "business_no"))
+        or settings.compuzone_business_number
+    )
     contact_name = _memo_field(job, ("사업자담당자", "business_contact_name", "business_contact")) or settings.compuzone_business_contact_name
     return business_number, contact_name
+
+
+def _factory_business_number(job: PurchaseJob) -> str:
+    text = " ".join(part for part in (job.title, job.memo, job.corp) if part)
+    match = re.search(r"\b([DP])\s*([1-4])\s*공?장?\b", text, flags=re.IGNORECASE)
+    if not match:
+        match = re.search(r"\b([DP])([1-4])\b", text, flags=re.IGNORECASE)
+    if not match:
+        return ""
+
+    prefix = match.group(1).upper()
+    index = int(match.group(2)) - 1
+    corp_code = "daeseung_precision" if prefix == "P" else "daeseung"
+    if job.corp_code and job.corp_code != corp_code:
+        return ""
+    business_numbers = CORPS[corp_code].business_numbers
+    if index < 0 or index >= len(business_numbers):
+        return ""
+    return business_numbers[index]
 
 
 def _memo_field(job: PurchaseJob, names: tuple[str, ...]) -> str:
@@ -821,7 +867,10 @@ def _select_tax_business(page, business_number: str, contact_name: str) -> None:
         needles = [business_number]
         if contact_name:
             needles.append(contact_name)
-        _click_popup_row_by_text(popup, needles, "선택")
+        try:
+            _click_popup_row_by_text(popup, needles, "선택")
+        except RuntimeError:
+            _click_popup_row_by_text(popup, [business_number], "선택")
         popup.wait_for_event("close", timeout=5000)
     except Exception:
         if not popup.is_closed():

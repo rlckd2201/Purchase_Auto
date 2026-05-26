@@ -7,6 +7,11 @@ from datetime import datetime, timezone
 import pytest
 
 from purchase_auto.config import Settings
+from purchase_auto.compuzone_order import (
+    _cart_visible_product_count,
+    _factory_business_number,
+    _job_tax_business_selection,
+)
 from purchase_auto.groupware_approval import (
     _approval_body_html,
     _approval_rule_for_job,
@@ -220,3 +225,31 @@ def test_asset_approval_body_uses_notebook_template_for_mixed_assets() -> None:
     assert _approval_title(job) == "\uc804\uc0b0 \uc9d1\uae30\ube44\ud488 \uad6c\ub9e4 \uac74(P3\uacf5\uc7a5)"
     assert _delegate_level_for_job(job) == "\ubcf8\ubd80\uc7a5"
     assert _approval_rule_for_job(job).startswith("21-4-3")
+
+
+def test_compuzone_tax_business_uses_factory_hint_over_stale_memo_number(tmp_path: Path) -> None:
+    now = datetime.now(timezone.utc)
+    job = PurchaseJob(
+        job_id="job",
+        corp="대승정밀",
+        corp_code="daeseung_precision",
+        status=PurchaseStatus.CREATED,
+        items=[PurchaseItem(url="https://www.compuzone.co.kr/product/product_detail.htm?ProductNo=960306", quantity=1)],
+        title="전산 소모품 구매 건(P3공장)",
+        requester="TEST",
+        memo="사업자번호=403-85-15640\nP3공장",
+        created_at=now,
+        updated_at=now,
+    )
+
+    business_number, contact_name = _job_tax_business_selection(job, _settings(tmp_path))
+
+    assert _factory_business_number(job) == "844-85-00770"
+    assert business_number == "844-85-00770"
+    assert contact_name == "윤기옥"
+
+
+def test_cart_visible_product_count_reads_compuzone_delivery_count() -> None:
+    body = "장바구니\n컴퓨존 배송상품 2\n상품명/옵션\n주문하기"
+
+    assert _cart_visible_product_count(body) == 2
