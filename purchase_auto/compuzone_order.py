@@ -353,6 +353,7 @@ def _click_add_to_cart(page) -> None:
             let score = 0;
             if (/장바구니|담기/.test(text)) score += 100;
             if (/option_insert/i.test(attr)) score += 70;
+            if (/basket_insert_direct/i.test(attr)) score += 130;
             if (/basket|cart/i.test(attr)) score += 35;
             if (inBuyArea(element)) score += 35;
             if (/구매하기|바로구매|주문하기|바로주문/.test(text)) score -= 60;
