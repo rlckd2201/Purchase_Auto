@@ -196,7 +196,7 @@ def _open_cart_order_page(page, job: PurchaseJob, settings: Settings, dialog_mes
         _raise_if_product_unavailable(page, item)
         _set_quantity(page, item.quantity)
         dialog_start = len(dialog_messages)
-        _click_add_to_cart(page)
+        cart_click = _click_add_to_cart(page)
         _raise_if_dialog_blocked_order(dialog_messages, dialog_start, item)
         expected_marker_groups.append(product_markers)
         _confirm_cart_add(
@@ -207,6 +207,7 @@ def _open_cart_order_page(page, job: PurchaseJob, settings: Settings, dialog_mes
             expected_marker_groups,
             dialog_messages,
             dialog_start,
+            cart_click,
         )
 
     page.goto(settings.compuzone_cart_url, wait_until="domcontentloaded", timeout=60000)
@@ -284,19 +285,23 @@ def _product_markers_from_page(page) -> list[str]:
     return markers[:8]
 
 
-def _click_add_to_cart(page) -> None:
+def _click_add_to_cart(page) -> dict[str, object]:
     scoped_selectors = [
         ".total_price .btn_area a.cart[onclick*='option_insert']",
         ".total_price .btn_area a[onclick*='option_insert'][onclick*='cart']",
         ".total_price .btn_area a[onclick*='option_insert'][onclick*='Cart']",
         ".total_price .btn_area button[onclick*='option_insert'][onclick*='cart']",
         ".total_price .btn_area button[onclick*='option_insert'][onclick*='Cart']",
+        ".total_price .btn_area a.buy[onclick*='basket_insert_direct']",
+        ".total_price .btn_area button[onclick*='basket_insert_direct']",
         ".total_price .btn_area button:has-text('장바구니')",
         ".total_price .btn_area a:has-text('장바구니')",
         ".total_price .btn_area input[value*='장바구니']",
         ".btn_area a.cart[onclick*='option_insert']",
         ".btn_area a[onclick*='option_insert'][onclick*='cart']",
         ".btn_area button[onclick*='option_insert'][onclick*='cart']",
+        ".btn_area a.buy[onclick*='basket_insert_direct']",
+        ".btn_area button[onclick*='basket_insert_direct']",
         ".btn_area button:has-text('장바구니')",
         ".btn_area a:has-text('장바구니')",
         ".btn_area input[value*='장바구니']",
@@ -305,13 +310,17 @@ def _click_add_to_cart(page) -> None:
         "a[onclick*='option_insert'][onclick*='Cart']",
         "button[onclick*='option_insert'][onclick*='cart']",
         "button[onclick*='option_insert'][onclick*='Cart']",
+        "a.buy[onclick*='basket_insert_direct']",
+        "button[onclick*='basket_insert_direct']",
         "input[value*='장바구니']",
     ]
-    try:
-        _click_first(page, scoped_selectors, "장바구니 버튼을 찾지 못했습니다.", timeout=2500)
-        return
-    except RuntimeError:
-        pass
+    for selector in scoped_selectors:
+        locator = page.locator(selector).first
+        try:
+            locator.click(timeout=2500)
+            return {"method": "selector", "selector": selector}
+        except Exception:
+            continue
 
     result = page.evaluate(
         """
@@ -380,7 +389,7 @@ def _click_add_to_cart(page) -> None:
     )
     if result.get("clicked"):
         page.wait_for_timeout(800)
-        return
+        return {"method": "candidate", "picked": result.get("picked")}
     candidates = result.get("candidates") or []
     raise RuntimeError(f"장바구니 버튼을 찾지 못했습니다. 감지된 후보={candidates}")
 
@@ -466,6 +475,7 @@ def _confirm_cart_add(
     expected_marker_groups: list[list[str]],
     dialog_messages: list[str],
     dialog_start: int,
+    cart_click: dict[str, object] | None = None,
 ) -> None:
     page.wait_for_timeout(1200)
     if _cart_page_contains_products(page, expected_count, expected_marker_groups):
@@ -487,9 +497,10 @@ def _confirm_cart_add(
     dialog_detail = _dialog_excerpt(dialog_messages, dialog_start)
     if dialog_detail:
         dialog_detail = f" 컴퓨존알림={dialog_detail}"
+    click_detail = f" 클릭정보={cart_click}" if cart_click else ""
     raise RuntimeError(
         f"상품이 장바구니에 담기지 않았습니다:{detail} {item.url} "
-        f"현재페이지={page.url}{dialog_detail} 화면요약={_page_text_excerpt(page)}"
+        f"현재페이지={page.url}{dialog_detail}{click_detail} 화면요약={_page_text_excerpt(page)}"
     )
 
 
