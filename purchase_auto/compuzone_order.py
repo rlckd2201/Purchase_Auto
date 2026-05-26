@@ -109,13 +109,22 @@ def _live_order(job: PurchaseJob, settings: Settings) -> CompuzoneOrderResult:
                 accept_downloads=True,
             )
         page = context.new_page()
-        page.on("dialog", lambda dialog: dialog.accept())
+        dialog_messages: list[str] = []
+
+        def _accept_dialog(dialog) -> None:
+            try:
+                dialog_messages.append(dialog.message)
+            except Exception:
+                pass
+            dialog.accept()
+
+        page.on("dialog", _accept_dialog)
         try:
             _ensure_compuzone_session(page, settings)
             if len(job.items) == 1:
-                _open_single_item_order_page(page, job.items[0])
+                _open_single_item_order_page(page, job.items[0], dialog_messages)
             else:
-                _open_cart_order_page(page, job, settings)
+                _open_cart_order_page(page, job, settings, dialog_messages)
             _raise_if_login_required(page)
             _prepare_order_page(page, settings, job)
             _click_final_order(page)
@@ -155,10 +164,11 @@ def _save_debug_screenshot(page, job: PurchaseJob, settings: Settings, stem: str
         pass
 
 
-def _open_single_item_order_page(page, item) -> None:
+def _open_single_item_order_page(page, item, dialog_messages: list[str]) -> None:
     page.goto(item.url, wait_until="domcontentloaded", timeout=60000)
     _raise_if_login_required(page)
     _set_quantity(page, item.quantity)
+    dialog_start = len(dialog_messages)
     _click_first(
         page,
         [
@@ -170,10 +180,12 @@ def _open_single_item_order_page(page, item) -> None:
         ],
         "바로구매 버튼을 찾지 못했습니다.",
     )
+    page.wait_for_timeout(800)
+    _raise_if_dialog_blocked_order(dialog_messages, dialog_start, item)
     page.wait_for_load_state("domcontentloaded", timeout=60000)
 
 
-def _open_cart_order_page(page, job: PurchaseJob, settings: Settings) -> None:
+def _open_cart_order_page(page, job: PurchaseJob, settings: Settings, dialog_messages: list[str]) -> None:
     if settings.compuzone_clear_cart_before_order:
         _clear_cart(page, settings)
     expected_marker_groups: list[list[str]] = []
@@ -183,29 +195,19 @@ def _open_cart_order_page(page, job: PurchaseJob, settings: Settings) -> None:
         product_markers = _product_markers_from_page(page)
         _raise_if_product_unavailable(page, item)
         _set_quantity(page, item.quantity)
-        _click_first(
-            page,
-            [
-                "a.cart[onclick*='option_insert']",
-                "a[onclick*='option_insert'][onclick*='cart']",
-                "a[onclick*='option_insert'][onclick*='Cart']",
-                "button[onclick*='option_insert'][onclick*='cart']",
-                "button[onclick*='option_insert'][onclick*='Cart']",
-                "a[onclick*='basket']",
-                "a[onclick*='Basket']",
-                "button[onclick*='basket']",
-                "button[onclick*='Basket']",
-                "button:has-text('장바구니')",
-                "a:has-text('장바구니')",
-                "button:has-text('담기')",
-                "a:has-text('담기')",
-                "input[value*='장바구니']",
-                "[onclick*='cart']",
-            ],
-            "장바구니 버튼을 찾지 못했습니다.",
-        )
+        dialog_start = len(dialog_messages)
+        _click_add_to_cart(page)
+        _raise_if_dialog_blocked_order(dialog_messages, dialog_start, item)
         expected_marker_groups.append(product_markers)
-        _confirm_cart_add(page, settings, item, len(expected_marker_groups), expected_marker_groups)
+        _confirm_cart_add(
+            page,
+            settings,
+            item,
+            len(expected_marker_groups),
+            expected_marker_groups,
+            dialog_messages,
+            dialog_start,
+        )
 
     page.goto(settings.compuzone_cart_url, wait_until="domcontentloaded", timeout=60000)
     _raise_if_login_required(page)
@@ -282,6 +284,140 @@ def _product_markers_from_page(page) -> list[str]:
     return markers[:8]
 
 
+def _click_add_to_cart(page) -> None:
+    scoped_selectors = [
+        ".total_price .btn_area a.cart[onclick*='option_insert']",
+        ".total_price .btn_area a[onclick*='option_insert'][onclick*='cart']",
+        ".total_price .btn_area a[onclick*='option_insert'][onclick*='Cart']",
+        ".total_price .btn_area button[onclick*='option_insert'][onclick*='cart']",
+        ".total_price .btn_area button[onclick*='option_insert'][onclick*='Cart']",
+        ".total_price .btn_area button:has-text('장바구니')",
+        ".total_price .btn_area a:has-text('장바구니')",
+        ".total_price .btn_area input[value*='장바구니']",
+        ".btn_area a.cart[onclick*='option_insert']",
+        ".btn_area a[onclick*='option_insert'][onclick*='cart']",
+        ".btn_area button[onclick*='option_insert'][onclick*='cart']",
+        ".btn_area button:has-text('장바구니')",
+        ".btn_area a:has-text('장바구니')",
+        ".btn_area input[value*='장바구니']",
+        "a.cart[onclick*='option_insert']",
+        "a[onclick*='option_insert'][onclick*='cart']",
+        "a[onclick*='option_insert'][onclick*='Cart']",
+        "button[onclick*='option_insert'][onclick*='cart']",
+        "button[onclick*='option_insert'][onclick*='Cart']",
+        "input[value*='장바구니']",
+    ]
+    try:
+        _click_first(page, scoped_selectors, "장바구니 버튼을 찾지 못했습니다.", timeout=2500)
+        return
+    except RuntimeError:
+        pass
+
+    result = page.evaluate(
+        """
+        () => {
+          const visible = element => {
+            const style = window.getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            return style.display !== 'none'
+              && style.visibility !== 'hidden'
+              && rect.width > 0
+              && rect.height > 0;
+          };
+          const textOf = element => [
+            element.innerText,
+            element.value,
+            element.getAttribute('title'),
+            element.getAttribute('aria-label'),
+            element.textContent,
+          ].filter(Boolean).join(' ').replace(/\\s+/g, ' ').trim();
+          const attrOf = element => [
+            element.getAttribute('onclick'),
+            element.getAttribute('href'),
+            element.className,
+            element.id,
+          ].filter(Boolean).join(' ');
+          const isGlobalNav = element => Boolean(element.closest(
+            'header, #header, .header, .top, .gnb, .nav, .quick, .quick_menu, .right_quick, .floating, .footer, #footer, .wish, .favorite'
+          ));
+          const inBuyArea = element => Boolean(element.closest(
+            '.total_price, .btn_area, .prod_info, .product_info, .product_detail, .right_area, .goods_info'
+          ));
+          const elements = Array.from(document.querySelectorAll('a, button, input, [role="button"], [onclick]'))
+            .filter(visible);
+          const candidates = [];
+          for (const element of elements) {
+            const text = textOf(element);
+            const attr = attrOf(element);
+            const haystack = `${text} ${attr}`;
+            let score = 0;
+            if (/장바구니|담기/.test(text)) score += 100;
+            if (/option_insert/i.test(attr)) score += 70;
+            if (/basket|cart/i.test(attr)) score += 35;
+            if (inBuyArea(element)) score += 35;
+            if (/구매하기|바로구매|주문하기|바로주문/.test(text)) score -= 60;
+            if (/관심|찜|위시|wish|favorite|keep|보관/.test(haystack)) score -= 80;
+            if (isGlobalNav(element)) score -= 120;
+            if (!text && /basket|cart/i.test(attr) && !/option_insert/i.test(attr)) score -= 90;
+            if (score > 0) {
+              candidates.push({ element, score, text, attr: String(attr).slice(0, 160), inBuyArea: inBuyArea(element) });
+            }
+          }
+          candidates.sort((a, b) => b.score - a.score);
+          const picked = candidates.find(candidate => candidate.score >= 100);
+          if (!picked) {
+            return { clicked: false, candidates: candidates.slice(0, 8).map(({ score, text, attr, inBuyArea }) => ({ score, text, attr, inBuyArea })) };
+          }
+          picked.element.click();
+          return {
+            clicked: true,
+            picked: { score: picked.score, text: picked.text, attr: picked.attr, inBuyArea: picked.inBuyArea },
+            candidates: candidates.slice(0, 8).map(({ score, text, attr, inBuyArea }) => ({ score, text, attr, inBuyArea })),
+          };
+        }
+        """
+    )
+    if result.get("clicked"):
+        page.wait_for_timeout(800)
+        return
+    candidates = result.get("candidates") or []
+    raise RuntimeError(f"장바구니 버튼을 찾지 못했습니다. 감지된 후보={candidates}")
+
+
+def _dialog_messages_since(dialog_messages: list[str], start_index: int) -> list[str]:
+    return [
+        re.sub(r"\s+", " ", str(message)).strip()
+        for message in dialog_messages[start_index:]
+        if str(message).strip()
+    ]
+
+
+def _dialog_excerpt(dialog_messages: list[str], start_index: int) -> str:
+    messages = _dialog_messages_since(dialog_messages, start_index)
+    return " / ".join(messages[-5:])
+
+
+def _raise_if_dialog_blocked_order(dialog_messages: list[str], start_index: int, item) -> None:
+    messages = _dialog_messages_since(dialog_messages, start_index)
+    if not messages:
+        return
+    text = " / ".join(messages)
+    product_no = _product_no_from_url(item.url)
+    detail = f"상품번호={product_no} " if product_no else ""
+    if re.search(r"로그인|login", text, re.IGNORECASE):
+        raise LoginRequiredError("컴퓨존 로그인이 필요합니다. 담당자 PC 브라우저 세션을 먼저 확인해 주세요.")
+    if re.search(
+        r"품절|일시\s*품절|판매\s*(중지|종료|완료)|구매\s*(불가|할 수 없)|주문\s*(불가|할 수 없)|"
+        r"재고\s*(부족|없)|단종|삭제된\s*상품|판매하지\s*않",
+        text,
+    ):
+        raise SoldOutProductError(
+            f"컴퓨존 상품이 품절/구매불가라 장바구니에 담을 수 없습니다: {detail}{item.url} 알림={text}",
+            product_no,
+            item.url,
+        )
+
+
 def _raise_if_product_unavailable(page, item) -> None:
     try:
         status = page.evaluate(
@@ -321,7 +457,15 @@ def _raise_if_product_unavailable(page, item) -> None:
         )
 
 
-def _confirm_cart_add(page, settings: Settings, item, expected_count: int, expected_marker_groups: list[list[str]]) -> None:
+def _confirm_cart_add(
+    page,
+    settings: Settings,
+    item,
+    expected_count: int,
+    expected_marker_groups: list[list[str]],
+    dialog_messages: list[str],
+    dialog_start: int,
+) -> None:
     page.wait_for_timeout(1200)
     if _cart_page_contains_products(page, expected_count, expected_marker_groups):
         return
@@ -339,7 +483,32 @@ def _confirm_cart_add(page, settings: Settings, item, expected_count: int, expec
 
     product_no = _product_no_from_url(item.url)
     detail = f" 상품번호={product_no}" if product_no else ""
-    raise RuntimeError(f"상품이 장바구니에 담기지 않았습니다:{detail} {item.url}")
+    dialog_detail = _dialog_excerpt(dialog_messages, dialog_start)
+    if dialog_detail:
+        dialog_detail = f" 컴퓨존알림={dialog_detail}"
+    raise RuntimeError(
+        f"상품이 장바구니에 담기지 않았습니다:{detail} {item.url} "
+        f"현재페이지={page.url}{dialog_detail} 화면요약={_page_text_excerpt(page)}"
+    )
+
+
+def _page_text_excerpt(page, max_chars: int = 500) -> str:
+    try:
+        body = page.locator("body").inner_text(timeout=3000)
+    except Exception:
+        return ""
+    lines = []
+    for raw_line in body.splitlines():
+        line = re.sub(r"\s+", " ", raw_line).strip()
+        if not line:
+            continue
+        if line in lines:
+            continue
+        lines.append(line)
+        if len(" / ".join(lines)) >= max_chars:
+            break
+    return " / ".join(lines)[:max_chars]
+
 
 
 def _cart_page_contains_products(

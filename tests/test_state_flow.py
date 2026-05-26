@@ -8,9 +8,12 @@ import pytest
 
 from purchase_auto.config import Settings
 from purchase_auto.compuzone_order import (
+    SoldOutProductError,
     _cart_visible_product_count,
+    _dialog_excerpt,
     _factory_business_number,
     _job_tax_business_selection,
+    _raise_if_dialog_blocked_order,
     _raise_if_product_unavailable,
 )
 from purchase_auto.groupware_approval import (
@@ -255,6 +258,22 @@ def test_cart_visible_product_count_reads_compuzone_delivery_count() -> None:
     body = "장바구니\n컴퓨존 배송상품 2\n상품명/옵션\n주문하기"
 
     assert _cart_visible_product_count(body) == 2
+
+
+def test_dialog_excerpt_keeps_compuzone_alert_text() -> None:
+    assert _dialog_excerpt(["첫 알림", "두 번째 알림"], 0) == "첫 알림 / 두 번째 알림"
+
+
+def test_dialog_blocked_order_raises_sold_out_product() -> None:
+    item = PurchaseItem(
+        url="https://www.compuzone.co.kr/product/product_detail.htm?ProductNo=1087083",
+        quantity=1,
+    )
+
+    with pytest.raises(SoldOutProductError) as exc:
+        _raise_if_dialog_blocked_order(["해당 상품은 품절되어 구매할 수 없습니다."], 0, item)
+
+    assert exc.value.product_no == "1087083"
 
 
 class _FakeProductPage:
