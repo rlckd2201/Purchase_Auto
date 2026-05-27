@@ -355,6 +355,8 @@ def test_compuzone_cart_add_does_not_use_direct_buy_button() -> None:
     assert "a.buy[onclick*='basket_insert_direct']" not in source
     assert "button[onclick*='basket_insert_direct']" not in source
     assert "a.cart[onclick*='basket_insert_direct']" in source
+    assert "basket_insert_detail" in source
+    assert "hasDetailBasketAction" in source
     assert "isBasketPageLink" in source
     assert "hasDirectBasketAction && !hasCartText && !hasCartClass" in source
 

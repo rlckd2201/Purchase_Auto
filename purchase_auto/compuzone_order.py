@@ -582,6 +582,8 @@ def _click_add_to_cart(page) -> dict[str, object]:
         ".total_price .btn_area a[onclick*='option_insert'][onclick*='Cart']",
         ".total_price .btn_area button[onclick*='option_insert'][onclick*='cart']",
         ".total_price .btn_area button[onclick*='option_insert'][onclick*='Cart']",
+        ".total_price .btn_area a[onclick*='basket_insert_detail']",
+        ".total_price .btn_area button[onclick*='basket_insert_detail']",
         ".total_price .btn_area a.cart[onclick*='basket_insert_direct']",
         ".total_price .btn_area button.cart[onclick*='basket_insert_direct']",
         ".total_price .btn_area button:has-text('장바구니')",
@@ -590,6 +592,8 @@ def _click_add_to_cart(page) -> dict[str, object]:
         ".btn_area a.cart[onclick*='option_insert']",
         ".btn_area a[onclick*='option_insert'][onclick*='cart']",
         ".btn_area button[onclick*='option_insert'][onclick*='cart']",
+        ".btn_area a[onclick*='basket_insert_detail']",
+        ".btn_area button[onclick*='basket_insert_detail']",
         ".btn_area a.cart[onclick*='basket_insert_direct']",
         ".btn_area button.cart[onclick*='basket_insert_direct']",
         ".btn_area button:has-text('장바구니')",
@@ -600,6 +604,8 @@ def _click_add_to_cart(page) -> dict[str, object]:
         "a[onclick*='option_insert'][onclick*='Cart']",
         "button[onclick*='option_insert'][onclick*='cart']",
         "button[onclick*='option_insert'][onclick*='Cart']",
+        "a[onclick*='basket_insert_detail']",
+        "button[onclick*='basket_insert_detail']",
         "a.cart[onclick*='basket_insert_direct']",
         "button.cart[onclick*='basket_insert_direct']",
         "input[value*='장바구니']",
@@ -653,6 +659,7 @@ def _click_add_to_cart(page) -> dict[str, object]:
             const hasCartText = /장바구니|담기/.test(text);
             const hasCartClass = /(^|\\s|_|-)(cart|basket)(\\s|_|-|$)/i.test(className);
             const hasOptionCartAction = /option_insert/i.test(attr) && /cart|basket|장바구니/i.test(haystack);
+            const hasDetailBasketAction = /basket_insert_detail/i.test(attr);
             const hasDirectBasketAction = /basket_insert_direct/i.test(attr);
             const isDirectBuy = /구매하기|바로구매|주문하기|바로주문/.test(text) || /(^|\\s|_|-)buy(\\s|_|-|$)/i.test(className);
             const isBasketPageLink = /basket_main\\.htm/i.test(attr) && !/option_insert|basket_insert_direct/i.test(attr);
@@ -660,6 +667,7 @@ def _click_add_to_cart(page) -> dict[str, object]:
             if (hasCartText) score += 140;
             if (hasCartClass && !isBasketPageLink) score += 110;
             if (hasOptionCartAction) score += 100;
+            if (hasDetailBasketAction) score += 130;
             if (hasDirectBasketAction && (hasCartText || hasCartClass)) score += 80;
             if (/basket|cart/i.test(attr) && !hasDirectBasketAction) score += 35;
             if (inBuyArea(element)) score += 35;
