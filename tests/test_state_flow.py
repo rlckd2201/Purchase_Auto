@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import inspect
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -11,6 +12,7 @@ from purchase_auto.compuzone_order import (
     CompuzoneProductLine,
     SoldOutProductError,
     _cart_visible_product_count,
+    _click_add_to_cart,
     _dialog_excerpt,
     _factory_business_number,
     _item_summary,
@@ -342,6 +344,15 @@ def test_dialog_blocked_order_raises_sold_out_product() -> None:
         _raise_if_dialog_blocked_order(["해당 상품은 품절되어 구매할 수 없습니다."], 0, item)
 
     assert exc.value.product_no == "1087083"
+
+
+def test_compuzone_cart_add_does_not_use_direct_buy_button() -> None:
+    source = inspect.getsource(_click_add_to_cart)
+
+    assert "a.buy[onclick*='basket_insert_direct']" not in source
+    assert "button[onclick*='basket_insert_direct']" not in source
+    assert "a.cart[onclick*='basket_insert_direct']" in source
+    assert "hasDirectBasketAction && !hasCartText && !hasCartClass" in source
 
 
 class _FakeProductPage:

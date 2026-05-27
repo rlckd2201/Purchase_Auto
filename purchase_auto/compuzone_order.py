@@ -577,21 +577,31 @@ def _choose_unit_price(values, quantity: int) -> int | None:
 
 def _click_add_to_cart(page) -> dict[str, object]:
     scoped_selectors = [
+        ".total_price .btn_area a.cart",
+        ".total_price .btn_area button.cart",
+        ".total_price .btn_area input.cart",
+        ".total_price .btn_area [class*='cart']",
+        ".total_price .btn_area [class*='basket']",
         ".total_price .btn_area a.cart[onclick*='option_insert']",
         ".total_price .btn_area a[onclick*='option_insert'][onclick*='cart']",
         ".total_price .btn_area a[onclick*='option_insert'][onclick*='Cart']",
         ".total_price .btn_area button[onclick*='option_insert'][onclick*='cart']",
         ".total_price .btn_area button[onclick*='option_insert'][onclick*='Cart']",
-        ".total_price .btn_area a.buy[onclick*='basket_insert_direct']",
-        ".total_price .btn_area button[onclick*='basket_insert_direct']",
+        ".total_price .btn_area a.cart[onclick*='basket_insert_direct']",
+        ".total_price .btn_area button.cart[onclick*='basket_insert_direct']",
         ".total_price .btn_area button:has-text('장바구니')",
         ".total_price .btn_area a:has-text('장바구니')",
         ".total_price .btn_area input[value*='장바구니']",
+        ".btn_area a.cart",
+        ".btn_area button.cart",
+        ".btn_area input.cart",
+        ".btn_area [class*='cart']",
+        ".btn_area [class*='basket']",
         ".btn_area a.cart[onclick*='option_insert']",
         ".btn_area a[onclick*='option_insert'][onclick*='cart']",
         ".btn_area button[onclick*='option_insert'][onclick*='cart']",
-        ".btn_area a.buy[onclick*='basket_insert_direct']",
-        ".btn_area button[onclick*='basket_insert_direct']",
+        ".btn_area a.cart[onclick*='basket_insert_direct']",
+        ".btn_area button.cart[onclick*='basket_insert_direct']",
         ".btn_area button:has-text('장바구니')",
         ".btn_area a:has-text('장바구니')",
         ".btn_area input[value*='장바구니']",
@@ -600,8 +610,8 @@ def _click_add_to_cart(page) -> dict[str, object]:
         "a[onclick*='option_insert'][onclick*='Cart']",
         "button[onclick*='option_insert'][onclick*='cart']",
         "button[onclick*='option_insert'][onclick*='Cart']",
-        "a.buy[onclick*='basket_insert_direct']",
-        "button[onclick*='basket_insert_direct']",
+        "a.cart[onclick*='basket_insert_direct']",
+        "button.cart[onclick*='basket_insert_direct']",
         "input[value*='장바구니']",
     ]
     for selector in scoped_selectors:
@@ -648,18 +658,26 @@ def _click_add_to_cart(page) -> dict[str, object]:
           for (const element of elements) {
             const text = textOf(element);
             const attr = attrOf(element);
+            const className = String(element.className || '');
             const haystack = `${text} ${attr}`;
+            const hasCartText = /장바구니|담기/.test(text);
+            const hasCartClass = /(^|\\s|_|-)(cart|basket)(\\s|_|-|$)/i.test(className);
+            const hasOptionCartAction = /option_insert/i.test(attr) && /cart|basket|장바구니/i.test(haystack);
+            const hasDirectBasketAction = /basket_insert_direct/i.test(attr);
+            const isDirectBuy = /구매하기|바로구매|주문하기|바로주문/.test(text) || /(^|\\s|_|-)buy(\\s|_|-|$)/i.test(className);
             let score = 0;
-            if (/장바구니|담기/.test(text)) score += 100;
-            if (/option_insert/i.test(attr)) score += 70;
-            if (/basket_insert_direct/i.test(attr)) score += 130;
-            if (/basket|cart/i.test(attr)) score += 35;
+            if (hasCartText) score += 140;
+            if (hasCartClass) score += 110;
+            if (hasOptionCartAction) score += 100;
+            if (hasDirectBasketAction && (hasCartText || hasCartClass)) score += 80;
+            if (/basket|cart/i.test(attr) && !hasDirectBasketAction) score += 35;
             if (inBuyArea(element)) score += 35;
-            if (/구매하기|바로구매|주문하기|바로주문/.test(text)) score -= 60;
+            if (hasDirectBasketAction && !hasCartText && !hasCartClass) score -= 150;
+            if (isDirectBuy) score -= 170;
             if (/관심|찜|위시|wish|favorite|keep|보관/.test(haystack)) score -= 80;
             if (isGlobalNav(element)) score -= 120;
             if (!text && /basket|cart/i.test(attr) && !/option_insert/i.test(attr)) score -= 90;
-            if (score > 0) {
+            if (score > 0 || /장바구니|담기|구매하기|바로구매|basket_insert_direct|option_insert/i.test(haystack)) {
               candidates.push({ element, score, text, attr: String(attr).slice(0, 160), inBuyArea: inBuyArea(element) });
             }
           }
