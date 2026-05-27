@@ -348,10 +348,14 @@ def test_dialog_blocked_order_raises_sold_out_product() -> None:
 
 def test_compuzone_cart_add_does_not_use_direct_buy_button() -> None:
     source = inspect.getsource(_click_add_to_cart)
+    lines = {line.strip() for line in source.splitlines()}
 
+    assert '".total_price .btn_area a.cart",' not in lines
+    assert '".btn_area a.cart",' not in lines
     assert "a.buy[onclick*='basket_insert_direct']" not in source
     assert "button[onclick*='basket_insert_direct']" not in source
     assert "a.cart[onclick*='basket_insert_direct']" in source
+    assert "isBasketPageLink" in source
     assert "hasDirectBasketAction && !hasCartText && !hasCartClass" in source
 
 

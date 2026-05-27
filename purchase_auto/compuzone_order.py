@@ -577,11 +577,6 @@ def _choose_unit_price(values, quantity: int) -> int | None:
 
 def _click_add_to_cart(page) -> dict[str, object]:
     scoped_selectors = [
-        ".total_price .btn_area a.cart",
-        ".total_price .btn_area button.cart",
-        ".total_price .btn_area input.cart",
-        ".total_price .btn_area [class*='cart']",
-        ".total_price .btn_area [class*='basket']",
         ".total_price .btn_area a.cart[onclick*='option_insert']",
         ".total_price .btn_area a[onclick*='option_insert'][onclick*='cart']",
         ".total_price .btn_area a[onclick*='option_insert'][onclick*='Cart']",
@@ -592,11 +587,6 @@ def _click_add_to_cart(page) -> dict[str, object]:
         ".total_price .btn_area button:has-text('장바구니')",
         ".total_price .btn_area a:has-text('장바구니')",
         ".total_price .btn_area input[value*='장바구니']",
-        ".btn_area a.cart",
-        ".btn_area button.cart",
-        ".btn_area input.cart",
-        ".btn_area [class*='cart']",
-        ".btn_area [class*='basket']",
         ".btn_area a.cart[onclick*='option_insert']",
         ".btn_area a[onclick*='option_insert'][onclick*='cart']",
         ".btn_area button[onclick*='option_insert'][onclick*='cart']",
@@ -665,13 +655,15 @@ def _click_add_to_cart(page) -> dict[str, object]:
             const hasOptionCartAction = /option_insert/i.test(attr) && /cart|basket|장바구니/i.test(haystack);
             const hasDirectBasketAction = /basket_insert_direct/i.test(attr);
             const isDirectBuy = /구매하기|바로구매|주문하기|바로주문/.test(text) || /(^|\\s|_|-)buy(\\s|_|-|$)/i.test(className);
+            const isBasketPageLink = /basket_main\\.htm/i.test(attr) && !/option_insert|basket_insert_direct/i.test(attr);
             let score = 0;
             if (hasCartText) score += 140;
-            if (hasCartClass) score += 110;
+            if (hasCartClass && !isBasketPageLink) score += 110;
             if (hasOptionCartAction) score += 100;
             if (hasDirectBasketAction && (hasCartText || hasCartClass)) score += 80;
             if (/basket|cart/i.test(attr) && !hasDirectBasketAction) score += 35;
             if (inBuyArea(element)) score += 35;
+            if (isBasketPageLink) score -= 220;
             if (hasDirectBasketAction && !hasCartText && !hasCartClass) score -= 150;
             if (isDirectBuy) score -= 170;
             if (/관심|찜|위시|wish|favorite|keep|보관/.test(haystack)) score -= 80;
