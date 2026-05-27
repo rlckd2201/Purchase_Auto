@@ -9,6 +9,7 @@ from .compuzone_order import SoldOutProductError
 from .config import load_settings
 from .models import CreatePurchaseJobRequest, PurchaseJob, RunCompuzoneOrderRequest, RunStepResponse, SubmitApprovalRequest
 from .services import (
+    PurchaseStepBusyError,
     create_purchase_job,
     get_purchase_job,
     list_purchase_jobs,
@@ -53,6 +54,8 @@ async def add_private_network_access_header(request: Request, call_next):
 def _http_error(exc: Exception) -> HTTPException:
     if isinstance(exc, KeyError):
         return HTTPException(status_code=404, detail="구매 작업을 찾지 못했습니다.")
+    if isinstance(exc, PurchaseStepBusyError):
+        return HTTPException(status_code=409, detail=str(exc))
     if isinstance(exc, ValueError):
         return HTTPException(status_code=400, detail=str(exc))
     if isinstance(exc, SoldOutProductError):

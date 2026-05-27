@@ -135,11 +135,17 @@ def _live_order(job: PurchaseJob, settings: Settings) -> CompuzoneOrderResult:
             context = browser.contexts[0] if browser.contexts else browser.new_context(accept_downloads=True)
             close_context = False
         else:
-            context = p.chromium.launch_persistent_context(
-                user_data_dir=str(settings.compuzone_profile_dir),
-                headless=settings.headless,
-                accept_downloads=True,
-            )
+            try:
+                context = p.chromium.launch_persistent_context(
+                    user_data_dir=str(settings.compuzone_profile_dir),
+                    headless=settings.headless,
+                    accept_downloads=True,
+                )
+            except Exception as exc:
+                raise RuntimeError(
+                    "컴퓨존 브라우저 실행에 실패했습니다. "
+                    f"프로필이 이미 사용 중이거나 Chromium이 즉시 종료되었습니다: {settings.compuzone_profile_dir}"
+                ) from exc
         page = context.new_page()
         dialog_messages: list[str] = []
         browser_diagnostics = _attach_browser_diagnostics(page)

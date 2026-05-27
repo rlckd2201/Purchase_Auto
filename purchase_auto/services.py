@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import threading
+from contextlib import contextmanager
 from pathlib import Path
+from uuid import uuid4
 
 from . import db
 from .compuzone_order import QuoteDownloadError, SoldOutProductError, run_compuzone_order
@@ -8,6 +11,29 @@ from .config import Settings, load_settings
 from .corps import get_corp
 from .groupware_approval import submit_groupware_approval
 from .models import CreatePurchaseJobRequest, PurchaseJob, PurchaseStatus
+
+
+class PurchaseStepBusyError(RuntimeError):
+    pass
+
+
+_RUNNING_STEPS_LOCK = threading.Lock()
+_RUNNING_STEPS: dict[str, str] = {}
+
+
+@contextmanager
+def _step_guard(label: str, key: str):
+    token = uuid4().hex
+    with _RUNNING_STEPS_LOCK:
+        if key in _RUNNING_STEPS:
+            raise PurchaseStepBusyError(f"{label} 자동화가 이미 실행 중입니다. 현재 실행이 끝난 뒤 다시 시도하세요.")
+        _RUNNING_STEPS[key] = token
+    try:
+        yield
+    finally:
+        with _RUNNING_STEPS_LOCK:
+            if _RUNNING_STEPS.get(key) == token:
+                _RUNNING_STEPS.pop(key, None)
 
 
 def _settings(settings: Settings | None) -> Settings:
@@ -41,9 +67,11 @@ def run_compuzone_order_step(job_id: str, settings: Settings | None = None) -> P
             "실행하려면 PURCHASE_AUTO_DRY_RUN=0 및 PURCHASE_AUTO_ENABLE_LIVE_COMPUZONE_ORDER=1 설정이 필요합니다."
         )
     job = get_purchase_job(job_id, cfg)
+    guard_key = f"compuzone:{cfg.compuzone_profile_dir.resolve()}"
     try:
-        db.append_log(cfg.db_path, job_id, "컴퓨존 장바구니/무통장 주문 생성을 시작합니다.")
-        result = run_compuzone_order(job, cfg)
+        with _step_guard("컴퓨존 주문/견적", guard_key):
+            db.append_log(cfg.db_path, job_id, "컴퓨존 장바구니/무통장 주문 생성을 시작합니다.")
+            result = run_compuzone_order(job, cfg)
         db.update_job(
             cfg.db_path,
             job_id,
@@ -61,6 +89,8 @@ def run_compuzone_order_step(job_id: str, settings: Settings | None = None) -> P
         )
         db.append_log(cfg.db_path, job_id, f"컴퓨존 견적서 PDF를 저장했습니다: {result.quote_pdf_path}")
         return get_purchase_job(updated.job_id, cfg)
+    except PurchaseStepBusyError:
+        raise
     except QuoteDownloadError as exc:
         db.update_job(
             cfg.db_path,
@@ -101,8 +131,10 @@ def submit_approval_step(job_id: str, settings: Settings | None = None) -> Purch
             raise ValueError("컴퓨존 견적서 PDF가 없어 품의를 상신할 수 없습니다.")
         if not Path(job.quote_pdf_path).exists():
             raise ValueError(f"컴퓨존 견적서 PDF 파일이 존재하지 않습니다: {job.quote_pdf_path}")
-        db.append_log(cfg.db_path, job_id, "그룹웨어 품의 자동상신을 시작합니다.")
-        result = submit_groupware_approval(job, cfg)
+        guard_key = f"groupware:{cfg.groupware_profile_dir.resolve()}"
+        with _step_guard("그룹웨어 품의", guard_key):
+            db.append_log(cfg.db_path, job_id, "그룹웨어 품의 자동상신을 시작합니다.")
+            result = submit_groupware_approval(job, cfg)
         db.update_job(
             cfg.db_path,
             job_id,
@@ -115,6 +147,8 @@ def submit_approval_step(job_id: str, settings: Settings | None = None) -> Purch
         updated = db.update_job(cfg.db_path, job_id, status=PurchaseStatus.WAITING_TAX_INVOICE)
         db.append_log(cfg.db_path, job_id, "세금계산서 수신 대기 상태로 전환했습니다.")
         return get_purchase_job(updated.job_id, cfg)
+    except PurchaseStepBusyError:
+        raise
     except Exception as exc:
         db.set_failed(cfg.db_path, job_id, str(exc))
         raise

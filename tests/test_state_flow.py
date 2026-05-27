@@ -30,6 +30,8 @@ from purchase_auto.groupware_approval import (
 )
 from purchase_auto.models import CreatePurchaseJobRequest, PurchaseJob, PurchaseItem, PurchaseStatus
 from purchase_auto.services import (
+    PurchaseStepBusyError,
+    _step_guard,
     create_purchase_job,
     get_purchase_job,
     mark_tax_invoice_received,
@@ -369,6 +371,25 @@ def test_compuzone_cart_add_waits_for_hidden_iframe_result() -> None:
     assert "common_iframe" in source
     assert "_wait_for_cart_insert_iframe" in source
     assert "browser_diag=" in source
+
+
+def test_step_guard_rejects_concurrent_same_key() -> None:
+    key = "compuzone:test-profile"
+
+    with _step_guard("컴퓨존 주문/견적", key):
+        with pytest.raises(PurchaseStepBusyError):
+            with _step_guard("컴퓨존 주문/견적", key):
+                pass
+
+    with _step_guard("컴퓨존 주문/견적", key):
+        pass
+
+
+def test_compuzone_launch_error_mentions_profile_lock() -> None:
+    source = inspect.getsource(compuzone_order)
+
+    assert "launch_persistent_context" in source
+    assert "프로필이 이미 사용 중" in source
 
 
 class _FakeProductPage:
