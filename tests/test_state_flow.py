@@ -19,6 +19,7 @@ from purchase_auto.compuzone_order import (
     _factory_business_number,
     _item_summary,
     _job_tax_business_selection,
+    _merge_product_lines,
     _raise_if_dialog_blocked_order,
     _raise_if_product_unavailable,
 )
@@ -202,6 +203,44 @@ def test_compuzone_item_summary_keeps_each_product_line() -> None:
     assert "NEXT-304BT\t1\t4210\t4210" in summary
 
 
+def test_order_page_product_code_rows_do_not_override_real_product_lines() -> None:
+    now = datetime.now(timezone.utc)
+    job = PurchaseJob(
+        job_id="job",
+        corp="\ub300\uc2b9\uc815\ubc00",
+        corp_code="daeseung_precision",
+        status=PurchaseStatus.CREATED,
+        items=[
+            PurchaseItem(url="https://www.compuzone.co.kr/product/product_detail.htm?ProductNo=1303277", quantity=1),
+            PurchaseItem(url="https://www.compuzone.co.kr/product/product_detail.htm?ProductNo=1195294", quantity=2),
+            PurchaseItem(url="https://www.compuzone.co.kr/product/product_detail.htm?ProductNo=1301049", quantity=1),
+        ],
+        created_at=now,
+        updated_at=now,
+    )
+    detail_lines = [
+        CompuzoneProductLine("[EFM] ipTIME H8008R-IGMP (스위칭허브/8포트/1000Mbps/IGMP)", 1, 24040, 24040, "1303277"),
+        CompuzoneProductLine("[크로스오버] 27FD100SB IPS FHD 100 블랙 [무결점]", 2, 112100, 224200, "1195294"),
+        CompuzoneProductLine("[HP] 프로데스크 2 G1a C27L5AT R5-8500G (16GB/512GB/400W/FD)", 1, 1324020, 1324020, "1301049"),
+    ]
+    order_page_lines = [
+        CompuzoneProductLine("제품코드 : 1303277", 1303277, 7000, 1438000, "1303277"),
+        CompuzoneProductLine("제품코드 : 1195294", 1195294, 130, 1438000, "1195294"),
+        CompuzoneProductLine("제품코드 : 1301049", 1195294, 130, 1438000, "1301049"),
+    ]
+
+    summary = _item_summary(job, _merge_product_lines(detail_lines, order_page_lines))
+
+    assert "\uc81c\ud488\ucf54\ub4dc" not in summary
+    assert "1303277\t1303277" not in summary
+    assert "H8008R-IGMP" in summary
+    assert "27FD100SB" in summary
+    assert "C27L5AT" in summary
+    assert "\t1\t24040\t24040" in summary
+    assert "\t2\t112100\t224200" in summary
+    assert "\t1\t1324020\t1324020" in summary
+
+
 def test_consumable_approval_body_expands_product_line_summary() -> None:
     now = datetime.now(timezone.utc)
     summary = "\n".join(
@@ -304,6 +343,50 @@ def test_asset_approval_body_uses_notebook_template_for_mixed_assets() -> None:
     assert _approval_title(job) == "\uc804\uc0b0 \uc9d1\uae30\ube44\ud488 \uad6c\ub9e4 \uac74(P3\uacf5\uc7a5)"
     assert _delegate_level_for_job(job) == "\ubcf8\ubd80\uc7a5"
     assert _approval_rule_for_job(job).startswith("21-4-3")
+
+
+def test_groupware_body_rejects_product_code_rows_and_keeps_p4_factory() -> None:
+    now = datetime.now(timezone.utc)
+    summary = "\n".join(
+        [
+            "[EFM] ipTIME H8008R-IGMP (스위칭허브/8포트/1000Mbps/IGMP)\t1\t24040\t24040",
+            "[크로스오버] 27FD100SB IPS FHD 100 블랙 [무결점]\t2\t112100\t224200",
+            "[HP] 프로데스크 2 G1a C27L5AT R5-8500G (16GB/512GB/400W/FD) [Win11Pro FPP 설치]\t1\t1324020\t1324020",
+            "제품코드 : 1303277\t1303277\t7000\t1438000",
+            "제품코드 : 1195294\t1195294\t130\t1438000",
+        ]
+    )
+    job = PurchaseJob(
+        job_id="job",
+        corp="\ub300\uc2b9\uc815\ubc00",
+        corp_code="daeseung_precision",
+        status=PurchaseStatus.QUOTE_SAVED,
+        items=[
+            PurchaseItem(url="https://www.compuzone.co.kr/product/product_detail.htm?ProductNo=1303277", quantity=1),
+            PurchaseItem(url="https://www.compuzone.co.kr/product/product_detail.htm?ProductNo=1195294", quantity=2),
+            PurchaseItem(url="https://www.compuzone.co.kr/product/product_detail.htm?ProductNo=1301049", quantity=1),
+        ],
+        title="\uc804\uc0b0 \uc9d1\uae30\ube44\ud488 \uad6c\ub9e4 \uac74(P4\uacf5\uc7a5)",
+        order_no="28179522",
+        amount=1572260,
+        memo="\uc0ac\uc5c5\uc790\ubc88\ud638=118-85-07029\n\ubc30\uc1a1\uc9c0=\uae40\uc81c\uc804\uc0b0\ud300",
+        item_summary=summary,
+        created_at=now,
+        updated_at=now,
+    )
+
+    body = _approval_body_html(job)
+
+    assert "P4\uacf5\uc7a5" in body
+    assert "P3\uacf5\uc7a5" not in body
+    assert "\uc81c\ud488\ucf54\ub4dc" not in body
+    assert "1303277 EA" not in body
+    assert "1195294 EA" not in body
+    assert "H8008R-IGMP" in body
+    assert "27FD100SB" in body
+    assert "C27L5AT" in body
+    assert "2 EA" in body
+    assert "\\1,572,260" in body
 
 
 def test_compuzone_tax_business_uses_factory_hint_over_stale_memo_number(tmp_path: Path) -> None:

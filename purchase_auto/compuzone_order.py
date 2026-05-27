@@ -85,6 +85,39 @@ class CompuzoneProductLine:
     product_no: str = ""
 
 
+_PRODUCT_CODE_LINE_RE = re.compile(
+    r"^\s*(?:제품코드|상품코드|상품번호|Product\s*No\.?)\s*[:：]?\s*\d+\s*$",
+    re.IGNORECASE,
+)
+
+
+def _normalized_product_no(value: str) -> str:
+    return re.sub(r"\D", "", value or "")
+
+
+def _is_suspicious_product_line(line: CompuzoneProductLine) -> bool:
+    name = re.sub(r"\s+", " ", line.name or "").strip()
+    if not name:
+        return True
+    product_no = _normalized_product_no(line.product_no)
+    if _PRODUCT_CODE_LINE_RE.match(name):
+        return True
+    if product_no and str(line.quantity) == product_no:
+        return True
+    if (line.quantity or 0) > 999:
+        return True
+    if line.unit_price is not None and line.amount is not None and line.quantity > 0:
+        expected = line.unit_price * line.quantity
+        tolerance = max(1000, abs(expected) // 20)
+        if abs(expected - line.amount) > tolerance:
+            return True
+    return False
+
+
+def _usable_product_lines(lines: list[CompuzoneProductLine]) -> list[CompuzoneProductLine]:
+    return [line for line in lines if not _is_suspicious_product_line(line)]
+
+
 def run_compuzone_order(
     job: PurchaseJob,
     settings: Settings | None = None,
@@ -112,6 +145,8 @@ def _item_summary(job: PurchaseJob, product_lines: list[CompuzoneProductLine] | 
 def _format_product_lines(product_lines: list[CompuzoneProductLine]) -> str:
     rows: list[str] = []
     for line in product_lines:
+        if _is_suspicious_product_line(line):
+            continue
         name = re.sub(r"\s+", " ", line.name or "").strip()
         quantity = line.quantity or 0
         unit_price = line.unit_price
@@ -672,9 +707,42 @@ def _merge_product_lines(
     detail_lines: list[CompuzoneProductLine],
     order_page_lines: list[CompuzoneProductLine],
 ) -> list[CompuzoneProductLine]:
-    if _format_product_lines(order_page_lines):
-        return order_page_lines
-    return detail_lines
+    detail_clean = _usable_product_lines(detail_lines)
+    order_clean = _usable_product_lines(order_page_lines)
+    if not detail_clean:
+        return order_clean
+    if not order_clean:
+        return detail_clean
+
+    merged: list[CompuzoneProductLine] = []
+    used_order_ids: set[int] = set()
+    order_by_no = {
+        _normalized_product_no(line.product_no): line
+        for line in order_clean
+        if _normalized_product_no(line.product_no)
+    }
+
+    for detail in detail_clean:
+        key = _normalized_product_no(detail.product_no)
+        incoming = order_by_no.get(key) if key else None
+        if incoming:
+            used_order_ids.add(id(incoming))
+            merged.append(
+                CompuzoneProductLine(
+                    name=detail.name or incoming.name,
+                    quantity=detail.quantity or incoming.quantity,
+                    unit_price=detail.unit_price if detail.unit_price is not None else incoming.unit_price,
+                    amount=detail.amount if detail.amount is not None else incoming.amount,
+                    product_no=detail.product_no or incoming.product_no,
+                )
+            )
+            continue
+        merged.append(detail)
+
+    for incoming in order_clean:
+        if id(incoming) not in used_order_ids:
+            merged.append(incoming)
+    return merged
 
 
 def _clean_summary_name(value: str) -> str:

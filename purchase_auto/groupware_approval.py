@@ -34,6 +34,48 @@ class ApprovalProductLine:
     amount: int
 
 
+FACTORY_BY_BUSINESS_NUMBER = {
+    "125-81-05619": "D1공장",
+    "403-85-07607": "D2공장",
+    "403-85-23311": "D3공장",
+    "125-81-32697": "P1공장",
+    "403-85-15640": "P2공장",
+    "844-85-00770": "P3공장",
+    "118-85-07029": "P4공장",
+}
+_FACTORY_RE = re.compile(r"\b([DP])\s*([1-4])\s*공장\b", re.IGNORECASE)
+_BUSINESS_NUMBER_RE = re.compile(r"\b(\d{3})-?(\d{2})-?(\d{5})\b")
+_PRODUCT_CODE_LINE_RE = re.compile(
+    r"^\s*(?:제품코드|상품코드|상품번호|Product\s*No\.?)\s*[:：]?\s*\d+\s*$",
+    re.IGNORECASE,
+)
+
+
+def _factory_label_from_text(value: str) -> str:
+    match = _FACTORY_RE.search(value or "")
+    if not match:
+        return ""
+    return f"{match.group(1).upper()}{match.group(2)}공장"
+
+
+def _business_number_from_text(value: str) -> str:
+    match = _BUSINESS_NUMBER_RE.search(value or "")
+    if not match:
+        return ""
+    return f"{match.group(1)}-{match.group(2)}-{match.group(3)}"
+
+
+def _is_suspicious_approval_product_line(name: str, quantity: int, unit_price: int, amount: int) -> bool:
+    normalized_name = re.sub(r"\s+", " ", name or "").strip()
+    if not normalized_name or _PRODUCT_CODE_LINE_RE.match(normalized_name):
+        return True
+    if quantity > 999:
+        return True
+    expected = unit_price * quantity
+    tolerance = max(1000, abs(expected) // 20)
+    return abs(expected - amount) > tolerance
+
+
 def submit_groupware_approval(job: PurchaseJob, settings: Settings | None = None) -> ApprovalResult:
     settings = settings or load_settings()
     if settings.dry_run:
@@ -180,10 +222,14 @@ def _approval_title(job: PurchaseJob) -> str:
 
 
 def _factory_label(job: PurchaseJob) -> str:
-    text = " ".join(filter(None, [job.title, job.memo, job.item_summary, job.corp]))
-    match = re.search(r"\b([DP][0-9])\s*공장\b", text, re.IGNORECASE)
-    if match:
-        return f"{match.group(1).upper()}공장"
+    for text in (job.title or "", job.memo or ""):
+        label = _factory_label_from_text(text)
+        if label:
+            return label
+    for text in (job.memo or "", job.title or ""):
+        business_number = _business_number_from_text(text)
+        if business_number and business_number in FACTORY_BY_BUSINESS_NUMBER:
+            return FACTORY_BY_BUSINESS_NUMBER[business_number]
     if job.corp_code == "daeseung_precision":
         return "P3공장"
     return "D1공장"
@@ -352,6 +398,8 @@ def _approval_product_lines(job: PurchaseJob) -> list[ApprovalProductLine]:
         if not name or quantity is None or unit_price is None or amount is None:
             continue
         if quantity <= 0 or unit_price < 0 or amount < 0:
+            continue
+        if _is_suspicious_approval_product_line(name, quantity, unit_price, amount):
             continue
         lines.append(ApprovalProductLine(name=name, quantity=quantity, unit_price=unit_price, amount=amount))
     return lines
@@ -931,7 +979,32 @@ def _legacy_approval_body_html(job: PurchaseJob) -> str:
 
 def _item_name(job: PurchaseJob) -> str:
     if job.item_summary:
-        return job.item_summary.splitlines()[0].strip()
+        for raw_line in job.item_summary.splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            parts = [part.strip() for part in line.split("\t")]
+            if len(parts) < 4:
+                parts = [part.strip() for part in line.split("|")]
+            if len(parts) >= 4:
+                name = parts[0]
+                quantity = _parse_int(parts[1])
+                unit_price = _parse_int(parts[2])
+                amount = _parse_int(parts[3])
+                if (
+                    name
+                    and quantity is not None
+                    and unit_price is not None
+                    and amount is not None
+                    and quantity > 0
+                    and unit_price >= 0
+                    and amount >= 0
+                    and not _is_suspicious_approval_product_line(name, quantity, unit_price, amount)
+                ):
+                    return name
+                continue
+            if not _PRODUCT_CODE_LINE_RE.match(line):
+                return line
     return "컴퓨존 전산 소모품"
 
 
