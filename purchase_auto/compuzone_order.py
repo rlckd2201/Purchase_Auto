@@ -1436,6 +1436,17 @@ def _job_tax_business_selection(job: PurchaseJob, settings: Settings) -> tuple[s
     return business_number, contact_name
 
 
+FACTORY_BUSINESS_NUMBERS: dict[tuple[str, str], str] = {
+    ("D", "1"): "125-81-05619",
+    ("D", "2"): "403-85-07607",
+    ("D", "3"): "403-85-23311",
+    ("P", "1"): "125-81-32697",
+    ("P", "2"): "403-85-15640",
+    ("P", "3"): "844-85-00770",
+    ("P", "4"): "118-85-07029",
+}
+
+
 def _factory_business_number(job: PurchaseJob) -> str:
     text = " ".join(part for part in (job.title, job.memo, job.corp) if part)
     match = re.search(r"\b([DP])\s*([1-4])\s*공?장?\b", text, flags=re.IGNORECASE)
@@ -1445,14 +1456,11 @@ def _factory_business_number(job: PurchaseJob) -> str:
         return ""
 
     prefix = match.group(1).upper()
-    index = int(match.group(2)) - 1
+    factory_no = match.group(2)
     corp_code = "daeseung_precision" if prefix == "P" else "daeseung"
     if job.corp_code and job.corp_code != corp_code:
         return ""
-    business_numbers = CORPS[corp_code].business_numbers
-    if index < 0 or index >= len(business_numbers):
-        return ""
-    return business_numbers[index]
+    return FACTORY_BUSINESS_NUMBERS.get((prefix, factory_no), "")
 
 
 def _memo_field(job: PurchaseJob, names: tuple[str, ...]) -> str:

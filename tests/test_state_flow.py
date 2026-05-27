@@ -328,6 +328,28 @@ def test_compuzone_tax_business_uses_factory_hint_over_stale_memo_number(tmp_pat
     assert contact_name == "윤기옥"
 
 
+def test_compuzone_tax_business_uses_p4_factory_over_stale_p3_memo_number(tmp_path: Path) -> None:
+    now = datetime.now(timezone.utc)
+    job = PurchaseJob(
+        job_id="job",
+        corp="대승정밀",
+        corp_code="daeseung_precision",
+        status=PurchaseStatus.CREATED,
+        items=[PurchaseItem(url="https://www.compuzone.co.kr/product/product_detail.htm?ProductNo=1294126", quantity=1)],
+        title="전산 집기비품 구매 건(P4공장)",
+        requester="TEST",
+        memo="사업자번호=844-85-00770\nP4공장",
+        created_at=now,
+        updated_at=now,
+    )
+
+    business_number, contact_name = _job_tax_business_selection(job, _settings(tmp_path))
+
+    assert _factory_business_number(job) == "118-85-07029"
+    assert business_number == "118-85-07029"
+    assert contact_name == "윤기옥"
+
+
 def test_cart_visible_product_count_reads_compuzone_delivery_count() -> None:
     body = "장바구니\n컴퓨존 배송상품 2\n상품명/옵션\n주문하기"
 
