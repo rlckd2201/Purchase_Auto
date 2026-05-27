@@ -179,7 +179,7 @@ def run_compuzone_order_step(job_id: str, settings: Settings | None = None, forc
     try:
         with _step_guard("컴퓨존 주문/견적", guard_key):
             db.append_log(cfg.db_path, job_id, "컴퓨존 장바구니/무통장 주문 생성을 시작합니다.")
-            result = run_compuzone_order(job, cfg)
+            result = run_compuzone_order(job, cfg, log=lambda message: db.append_log(cfg.db_path, job_id, message))
         db.update_job(
             cfg.db_path,
             job_id,

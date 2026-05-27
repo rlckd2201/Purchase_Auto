@@ -427,7 +427,7 @@ def test_compuzone_force_restart_releases_stuck_guard_and_runs(monkeypatch, tmp_
     monkeypatch.setattr(
         services,
         "run_compuzone_order",
-        lambda purchase_job, cfg: CompuzoneOrderResult(
+        lambda purchase_job, cfg, log=None: CompuzoneOrderResult(
             order_no="28170000",
             amount=12000,
             item_summary="테스트 상품\t1\t12000\t12000",

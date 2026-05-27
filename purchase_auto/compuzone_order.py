@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-import re
 import base64
+import re
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -16,6 +18,20 @@ _RELEVANT_RESPONSE_RE = re.compile(
     r"(order_function|product_detail_opt_function|basket|bsk|cart|buy|buyea)",
     re.IGNORECASE,
 )
+ProgressLog = Callable[[str], None] | None
+
+
+def _progress(log: ProgressLog, message: str) -> None:
+    if not log:
+        return
+    try:
+        log(message)
+    except Exception:
+        pass
+
+
+def _elapsed(started_at: float) -> str:
+    return f"{time.perf_counter() - started_at:.1f}초"
 
 
 class AutomationNotEnabledError(RuntimeError):
@@ -69,13 +85,17 @@ class CompuzoneProductLine:
     product_no: str = ""
 
 
-def run_compuzone_order(job: PurchaseJob, settings: Settings | None = None) -> CompuzoneOrderResult:
+def run_compuzone_order(
+    job: PurchaseJob,
+    settings: Settings | None = None,
+    log: ProgressLog = None,
+) -> CompuzoneOrderResult:
     settings = settings or load_settings()
     if settings.dry_run:
         return _dry_run_order(job, settings)
     if not settings.enable_live_compuzone_order:
         raise AutomationNotEnabledError("실제 컴퓨존 주문은 PURCHASE_AUTO_ENABLE_LIVE_COMPUZONE_ORDER=1 일 때만 실행됩니다.")
-    return _live_order(job, settings)
+    return _live_order(job, settings, log=log)
 
 
 def _job_artifact_dir(job: PurchaseJob, settings: Settings) -> Path:
@@ -122,7 +142,7 @@ def _dry_run_order(job: PurchaseJob, settings: Settings) -> CompuzoneOrderResult
     )
 
 
-def _live_order(job: PurchaseJob, settings: Settings) -> CompuzoneOrderResult:
+def _live_order(job: PurchaseJob, settings: Settings, log: ProgressLog = None) -> CompuzoneOrderResult:
     from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
     from playwright.sync_api import sync_playwright
 
@@ -159,22 +179,34 @@ def _live_order(job: PurchaseJob, settings: Settings) -> CompuzoneOrderResult:
 
         page.on("dialog", _accept_dialog)
         try:
+            session_started = time.perf_counter()
+            _progress(log, "컴퓨존 세션 확인 시작")
             _ensure_compuzone_session(page, settings)
+            _progress(log, f"컴퓨존 세션 확인 완료 ({_elapsed(session_started)})")
+            cart_started = time.perf_counter()
             if len(job.items) == 1:
                 product_lines = _open_single_item_order_page(page, job.items[0], dialog_messages)
             else:
-                product_lines = _open_cart_order_page(page, job, settings, dialog_messages, browser_diagnostics)
+                product_lines = _open_cart_order_page(page, job, settings, dialog_messages, browser_diagnostics, log=log)
+            _progress(log, f"컴퓨존 주문 페이지 준비 완료 ({_elapsed(cart_started)})")
             _raise_if_login_required(page)
-            _prepare_order_page(page, settings, job)
+            prepare_started = time.perf_counter()
+            _prepare_order_page(page, settings, job, log=log)
+            _progress(log, f"컴퓨존 주문서 입력 완료 ({_elapsed(prepare_started)})")
             product_lines = _merge_product_lines(product_lines, _extract_order_page_product_lines(page, job))
+            order_started = time.perf_counter()
+            _progress(log, "컴퓨존 최종 주문 클릭 시작")
             _click_final_order(page)
             page.wait_for_load_state("domcontentloaded", timeout=60000)
             body = page.locator("body").inner_text(timeout=10000)
             order_no = _extract_order_no(body)
             amount = _extract_amount(body)
+            _progress(log, f"컴퓨존 주문 완료 화면 확인 완료: 주문번호 {order_no} ({_elapsed(order_started)})")
             item_summary = _item_summary(job, product_lines)
             try:
+                quote_started = time.perf_counter()
                 quote_path = _download_quote_pdf(page, order_no, settings, job)
+                _progress(log, f"컴퓨존 견적서 PDF 저장 완료 ({_elapsed(quote_started)})")
             except Exception as exc:
                 raise QuoteDownloadError(str(exc), order_no, amount, item_summary) from exc
             return CompuzoneOrderResult(
@@ -303,20 +335,34 @@ def _open_cart_order_page(
     settings: Settings,
     dialog_messages: list[str],
     browser_diagnostics: dict[str, list[str]] | None = None,
+    log: ProgressLog = None,
 ) -> list[CompuzoneProductLine]:
     if settings.compuzone_clear_cart_before_order:
+        clear_started = time.perf_counter()
+        _progress(log, "컴퓨존 기존 장바구니 정리 시작")
         _clear_cart(page, settings)
+        _progress(log, f"컴퓨존 기존 장바구니 정리 완료 ({_elapsed(clear_started)})")
     expected_marker_groups: list[list[str]] = []
     product_lines: list[CompuzoneProductLine] = []
-    for item in job.items:
+    total_items = len(job.items)
+    for index, item in enumerate(job.items, start=1):
+        product_no = _product_no_from_url(item.url)
+        item_started = time.perf_counter()
+        _progress(log, f"컴퓨존 상품 {index}/{total_items} 페이지 진입 시작: 상품번호={product_no or '-'}")
         page.goto(item.url, wait_until="domcontentloaded", timeout=60000)
         _raise_if_login_required(page)
+        _progress(log, f"컴퓨존 상품 {index}/{total_items} 페이지 진입 완료 ({_elapsed(item_started)})")
         product_markers = _product_markers_from_page(page)
         _raise_if_product_unavailable(page, item)
         _set_quantity(page, item.quantity)
         product_line = _product_line_from_detail_page(page, item)
         dialog_start = len(dialog_messages)
+        click_started = time.perf_counter()
         cart_click = _click_add_to_cart(page)
+        _progress(
+            log,
+            f"컴퓨존 상품 {index}/{total_items} 장바구니 클릭 완료 ({_elapsed(click_started)}, {cart_click.get('selector') or cart_click.get('method')})",
+        )
         iframe_detail = _wait_for_cart_insert_iframe(page)
         if iframe_detail:
             cart_click["iframe"] = iframe_detail
@@ -324,6 +370,7 @@ def _open_cart_order_page(
         expected_marker_groups.append(product_markers)
         if product_line:
             product_lines.append(product_line)
+        confirm_started = time.perf_counter()
         _confirm_cart_add(
             page,
             settings,
@@ -335,7 +382,11 @@ def _open_cart_order_page(
             cart_click,
             browser_diagnostics,
         )
+        _progress(log, f"컴퓨존 상품 {index}/{total_items} 장바구니 반영 확인 완료 ({_elapsed(confirm_started)})")
+        _progress(log, f"컴퓨존 상품 {index}/{total_items} 처리 완료 ({_elapsed(item_started)})")
 
+    cart_started = time.perf_counter()
+    _progress(log, "컴퓨존 장바구니 주문 페이지 이동 시작")
     page.goto(settings.compuzone_cart_url, wait_until="domcontentloaded", timeout=60000)
     _raise_if_login_required(page)
     _assert_cart_ready_for_order(page, len(job.items), expected_marker_groups)
@@ -360,6 +411,7 @@ def _open_cart_order_page(
         "장바구니 주문 버튼을 찾지 못했습니다.",
     )
     page.wait_for_load_state("domcontentloaded", timeout=60000)
+    _progress(log, f"컴퓨존 장바구니 주문 페이지 이동 완료 ({_elapsed(cart_started)})")
     return product_lines
 
 
@@ -1334,20 +1386,32 @@ def _raise_if_login_required(page) -> None:
         raise LoginRequiredError("컴퓨존 로그인이 필요합니다. 담당자 PC 브라우저 세션을 먼저 확인해 주세요.")
 
 
-def _prepare_order_page(page, settings: Settings, job: PurchaseJob) -> None:
+def _prepare_order_page(page, settings: Settings, job: PurchaseJob, log: ProgressLog = None) -> None:
     delivery_name, delivery_keywords = _job_delivery_selection(job, settings)
     business_number, business_contact_name = _job_tax_business_selection(job, settings)
     _dismiss_order_info_modal(page)
+    step_started = time.perf_counter()
     _select_delivery_address(page, delivery_name, delivery_keywords)
+    _progress(log, f"컴퓨존 주문서 배송지 선택 완료: {delivery_name} ({_elapsed(step_started)})")
+    step_started = time.perf_counter()
     _select_bank_transfer(page)
+    _progress(log, f"컴퓨존 주문서 무통장 결제 선택 완료 ({_elapsed(step_started)})")
+    step_started = time.perf_counter()
     _select_tax_business(
         page,
         business_number,
         business_contact_name,
     )
+    _progress(log, f"컴퓨존 주문서 사업자 선택 완료: {business_number} ({_elapsed(step_started)})")
+    step_started = time.perf_counter()
     _fill_depositor_name(page, settings.compuzone_depositor_name)
+    _progress(log, f"컴퓨존 주문서 입금자 입력 완료 ({_elapsed(step_started)})")
+    step_started = time.perf_counter()
     _check_invoice_options(page)
+    _progress(log, f"컴퓨존 주문서 증빙 옵션 확인 완료 ({_elapsed(step_started)})")
+    step_started = time.perf_counter()
     _check_required_agreements(page)
+    _progress(log, f"컴퓨존 주문서 필수 동의 확인 완료 ({_elapsed(step_started)})")
     _dismiss_order_info_modal(page)
 
 
@@ -1408,36 +1472,39 @@ def _normalize_text(value: str) -> str:
     return re.sub(r"\s+", "", value or "").lower()
 
 
+def _body_text(page, timeout: int = 1000) -> str:
+    try:
+        return page.locator("body").inner_text(timeout=timeout)
+    except Exception:
+        return ""
+
+
 def _body_contains(page, value: str) -> bool:
     if not value:
         return True
-    try:
-        body = page.locator("body").inner_text(timeout=3000)
-    except Exception:
-        return False
-    return _normalize_text(value) in _normalize_text(body)
+    return _normalize_text(value) in _normalize_text(_body_text(page))
 
 
 def _body_contains_all(page, values: tuple[str, ...]) -> bool:
-    return all(_body_contains(page, value) for value in values)
+    targets = [_normalize_text(value) for value in values if value]
+    if not targets:
+        return True
+    normalized_body = _normalize_text(_body_text(page))
+    return all(target in normalized_body for target in targets)
 
 
 def _wait_body_contains_all(page, values: tuple[str, ...], timeout_ms: int = 10000) -> bool:
-    attempts = max(1, timeout_ms // 500)
-    for _ in range(attempts):
+    deadline = time.perf_counter() + max(1, timeout_ms) / 1000
+    while True:
         if _body_contains_all(page, values):
             return True
+        if time.perf_counter() >= deadline:
+            return _body_contains_all(page, values)
         page.wait_for_timeout(500)
-    return _body_contains_all(page, values)
 
 
 def _wait_body_contains(page, value: str, timeout_ms: int = 10000) -> bool:
-    attempts = max(1, timeout_ms // 500)
-    for _ in range(attempts):
-        if _body_contains(page, value):
-            return True
-        page.wait_for_timeout(500)
-    return _body_contains(page, value)
+    return _wait_body_contains_all(page, (value,), timeout_ms=timeout_ms)
 
 
 def _open_popup(page, selectors: list[str], error_message: str):
