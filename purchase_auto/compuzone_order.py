@@ -770,6 +770,10 @@ def _click_add_to_cart(page) -> dict[str, object]:
         ".total_price .btn_area button[onclick*='basket_insert_detail']",
         ".total_price .btn_area a.cart[onclick*='basket_insert_direct']",
         ".total_price .btn_area button.cart[onclick*='basket_insert_direct']",
+        ".total_price .btn_area a.cart[href*='new_recommendpc_insert']",
+        ".total_price .btn_area button.cart[onclick*='new_recommendpc_insert']",
+        ".total_price .btn_area a.cart[href*='new_compuzonepremiumpc_insert']",
+        ".total_price .btn_area button.cart[onclick*='new_compuzonepremiumpc_insert']",
         ".total_price .btn_area button:has-text('장바구니')",
         ".total_price .btn_area a:has-text('장바구니')",
         ".total_price .btn_area input[value*='장바구니']",
@@ -780,6 +784,10 @@ def _click_add_to_cart(page) -> dict[str, object]:
         ".btn_area button[onclick*='basket_insert_detail']",
         ".btn_area a.cart[onclick*='basket_insert_direct']",
         ".btn_area button.cart[onclick*='basket_insert_direct']",
+        ".btn_area a.cart[href*='new_recommendpc_insert']",
+        ".btn_area button.cart[onclick*='new_recommendpc_insert']",
+        ".btn_area a.cart[href*='new_compuzonepremiumpc_insert']",
+        ".btn_area button.cart[onclick*='new_compuzonepremiumpc_insert']",
         ".btn_area button:has-text('장바구니')",
         ".btn_area a:has-text('장바구니')",
         ".btn_area input[value*='장바구니']",
@@ -792,6 +800,10 @@ def _click_add_to_cart(page) -> dict[str, object]:
         "button[onclick*='basket_insert_detail']",
         "a.cart[onclick*='basket_insert_direct']",
         "button.cart[onclick*='basket_insert_direct']",
+        "a.cart[href*='new_recommendpc_insert']",
+        "button.cart[onclick*='new_recommendpc_insert']",
+        "a.cart[href*='new_compuzonepremiumpc_insert']",
+        "button.cart[onclick*='new_compuzonepremiumpc_insert']",
         "input[value*='장바구니']",
     ]
     for selector in scoped_selectors:
@@ -846,6 +858,7 @@ def _click_add_to_cart(page) -> dict[str, object]:
             const hasOptionCartAction = /option_insert/i.test(attr) && /cart|basket|장바구니/i.test(haystack);
             const hasDetailBasketAction = /basket_insert_detail/i.test(attr);
             const hasDirectBasketAction = /basket_insert_direct/i.test(attr);
+            const hasRecommendPcCartAction = /new_(recommendpc|compuzonepremiumpc)_insert(?!_order)/i.test(attr);
             const isDirectBuy = /구매하기|바로구매|주문하기|바로주문/.test(text) || /(^|\\s|_|-)buy(\\s|_|-|$)/i.test(className);
             const isBasketPageLink = /basket_main\\.htm/i.test(attr) && !/option_insert|basket_insert_direct/i.test(attr);
             let score = 0;
@@ -853,6 +866,7 @@ def _click_add_to_cart(page) -> dict[str, object]:
             if (hasCartClass && !isBasketPageLink) score += 110;
             if (hasOptionCartAction) score += 100;
             if (hasDetailBasketAction) score += 130;
+            if (hasRecommendPcCartAction) score += 160;
             if (hasDirectBasketAction && (hasCartText || hasCartClass)) score += 80;
             if (/basket|cart/i.test(attr) && !hasDirectBasketAction) score += 35;
             if (inBuyArea(element)) score += 35;
@@ -862,7 +876,7 @@ def _click_add_to_cart(page) -> dict[str, object]:
             if (/관심|찜|위시|wish|favorite|keep|보관/.test(haystack)) score -= 80;
             if (isGlobalNav(element)) score -= 120;
             if (!text && /basket|cart/i.test(attr) && !/option_insert/i.test(attr)) score -= 90;
-            if (score > 0 || /장바구니|담기|구매하기|바로구매|basket_insert_direct|option_insert/i.test(haystack)) {
+            if (score > 0 || /장바구니|담기|구매하기|바로구매|basket_insert_direct|option_insert|new_recommendpc_insert|new_compuzonepremiumpc_insert/i.test(haystack)) {
               candidates.push({ element, score, text, attr: String(attr).slice(0, 160), inBuyArea: inBuyArea(element) });
             }
           }

@@ -365,6 +365,16 @@ def test_compuzone_cart_add_does_not_use_direct_buy_button() -> None:
     assert "hasDirectBasketAction && !hasCartText && !hasCartClass" in source
 
 
+def test_compuzone_cart_add_supports_recommend_pc_cart_action() -> None:
+    source = inspect.getsource(_click_add_to_cart)
+
+    assert "new_recommendpc_insert" in source
+    assert "new_compuzonepremiumpc_insert" in source
+    assert "hasRecommendPcCartAction" in source
+    assert "_insert(?!_order)" in source
+    assert "a.cart[href*='new_recommendpc_insert']" in source
+
+
 def test_compuzone_cart_add_waits_for_hidden_iframe_result() -> None:
     source = inspect.getsource(compuzone_order)
 
