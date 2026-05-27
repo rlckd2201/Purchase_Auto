@@ -7,9 +7,10 @@ from datetime import datetime, timezone
 
 import pytest
 
-from purchase_auto import compuzone_order
+from purchase_auto import compuzone_order, services
 from purchase_auto.config import Settings
 from purchase_auto.compuzone_order import (
+    CompuzoneOrderResult,
     CompuzoneProductLine,
     SoldOutProductError,
     _cart_visible_product_count,
@@ -28,7 +29,7 @@ from purchase_auto.groupware_approval import (
     _delegate_level_for_job,
     _recipient_rows_for_job,
 )
-from purchase_auto.models import CreatePurchaseJobRequest, PurchaseJob, PurchaseItem, PurchaseStatus
+from purchase_auto.models import CreatePurchaseJobRequest, PurchaseJob, PurchaseItem, PurchaseStatus, RunCompuzoneOrderRequest
 from purchase_auto.services import (
     PurchaseStepBusyError,
     _step_guard,
@@ -373,6 +374,15 @@ def test_compuzone_cart_add_supports_recommend_pc_cart_action() -> None:
     assert "hasRecommendPcCartAction" in source
     assert "_insert(?!_order)" in source
     assert "a.cart[href*='new_recommendpc_insert']" in source
+    assert "a[onclick*='new_recommendpc_insert']:not([onclick*='_order'])" in source
+
+
+def test_compuzone_cart_iframe_wait_does_not_stall_on_basket_navigation() -> None:
+    source = inspect.getsource(compuzone_order)
+
+    assert "basket_main\\.htm" in source
+    assert "timeout=2500" in source
+    assert "timeout=8000" not in inspect.getsource(compuzone_order._wait_for_cart_insert_iframe)
 
 
 def test_compuzone_cart_add_waits_for_hidden_iframe_result() -> None:
@@ -393,6 +403,46 @@ def test_step_guard_rejects_concurrent_same_key() -> None:
 
     with _step_guard("컴퓨존 주문/견적", key):
         pass
+
+
+def test_run_compuzone_request_defaults_to_force_restart() -> None:
+    assert RunCompuzoneOrderRequest().force_restart is True
+
+
+def test_compuzone_force_restart_releases_stuck_guard_and_runs(monkeypatch, tmp_path: Path) -> None:
+    settings = replace(_settings(tmp_path), dry_run=False, enable_live_compuzone_order=True)
+    job = create_purchase_job(_request(), settings)
+    guard_key = f"compuzone:{settings.compuzone_profile_dir.resolve()}"
+
+    with services._RUNNING_STEPS_LOCK:
+        services._RUNNING_STEPS[guard_key] = services._RunningStep(
+            token="stuck",
+            label="compuzone",
+            key=guard_key,
+            started_at=0.0,
+        )
+
+    monkeypatch.setattr(services, "_kill_browser_processes_for_profile", lambda profile_dir: ["1234"])
+    monkeypatch.setattr(services, "_remove_chromium_profile_locks", lambda profile_dir: ["SingletonLock"])
+    monkeypatch.setattr(
+        services,
+        "run_compuzone_order",
+        lambda purchase_job, cfg: CompuzoneOrderResult(
+            order_no="28170000",
+            amount=12000,
+            item_summary="테스트 상품\t1\t12000\t12000",
+            quote_pdf_path=str(tmp_path / "quote.pdf"),
+            raw_status="order_submitted_pending_payment",
+        ),
+    )
+
+    updated = run_compuzone_order_step(job.job_id, settings, force_restart=True)
+
+    assert updated.order_no == "28170000"
+    assert updated.status == PurchaseStatus.QUOTE_SAVED
+    assert any("killed_browser_pids=1234" in entry["message"] for entry in updated.logs)
+    with services._RUNNING_STEPS_LOCK:
+        assert guard_key not in services._RUNNING_STEPS
 
 
 def test_compuzone_launch_error_mentions_profile_lock() -> None:

@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import os
+import shutil
+import subprocess
 import threading
+import time
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
@@ -17,8 +22,16 @@ class PurchaseStepBusyError(RuntimeError):
     pass
 
 
+@dataclass(frozen=True)
+class _RunningStep:
+    token: str
+    label: str
+    key: str
+    started_at: float
+
+
 _RUNNING_STEPS_LOCK = threading.Lock()
-_RUNNING_STEPS: dict[str, str] = {}
+_RUNNING_STEPS: dict[str, _RunningStep] = {}
 
 
 @contextmanager
@@ -27,13 +40,104 @@ def _step_guard(label: str, key: str):
     with _RUNNING_STEPS_LOCK:
         if key in _RUNNING_STEPS:
             raise PurchaseStepBusyError(f"{label} 자동화가 이미 실행 중입니다. 현재 실행이 끝난 뒤 다시 시도하세요.")
-        _RUNNING_STEPS[key] = token
+        _RUNNING_STEPS[key] = _RunningStep(token=token, label=label, key=key, started_at=time.monotonic())
     try:
         yield
     finally:
         with _RUNNING_STEPS_LOCK:
-            if _RUNNING_STEPS.get(key) == token:
+            current = _RUNNING_STEPS.get(key)
+            if current and current.token == token:
                 _RUNNING_STEPS.pop(key, None)
+
+
+def _powershell_single_quoted(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _kill_browser_processes_for_profile(profile_dir: Path) -> list[str]:
+    if os.name != "nt":
+        return []
+
+    profile = str(profile_dir.resolve())
+    command = (
+        "$needle = "
+        + _powershell_single_quoted(profile.lower())
+        + "; Get-CimInstance Win32_Process | "
+        + "Where-Object { $_.CommandLine -and $_.ProcessName -match 'chrome|chromium|msedge' "
+        + "-and $_.CommandLine.ToLowerInvariant().Contains($needle) } | "
+        + "Select-Object -ExpandProperty ProcessId"
+    )
+    try:
+        result = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-Command", command],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+    killed: list[str] = []
+    for raw_pid in result.stdout.splitlines():
+        raw_pid = raw_pid.strip()
+        if not raw_pid.isdigit():
+            continue
+        pid = int(raw_pid)
+        if pid == os.getpid():
+            continue
+        try:
+            kill_result = subprocess.run(
+                ["taskkill.exe", "/PID", str(pid), "/T", "/F"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if kill_result.returncode == 0:
+            killed.append(str(pid))
+    return killed
+
+
+def _remove_chromium_profile_locks(profile_dir: Path) -> list[str]:
+    removed: list[str] = []
+    for name in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
+        target = profile_dir / name
+        try:
+            if target.is_dir():
+                shutil.rmtree(target)
+                removed.append(name)
+            elif target.exists():
+                target.unlink()
+                removed.append(name)
+        except OSError:
+            continue
+    return removed
+
+
+def _reset_browser_step(label: str, key: str, profile_dir: Path, wait_seconds: float = 2.0) -> list[str]:
+    details: list[str] = []
+    killed = _kill_browser_processes_for_profile(profile_dir)
+    if killed:
+        details.append(f"killed_browser_pids={','.join(killed)}")
+    removed = _remove_chromium_profile_locks(profile_dir)
+    if removed:
+        details.append(f"removed_profile_locks={','.join(removed)}")
+
+    deadline = time.monotonic() + wait_seconds
+    while time.monotonic() < deadline:
+        with _RUNNING_STEPS_LOCK:
+            if key not in _RUNNING_STEPS:
+                return details
+        time.sleep(0.25)
+
+    with _RUNNING_STEPS_LOCK:
+        running = _RUNNING_STEPS.pop(key, None)
+    if running:
+        elapsed = max(0.0, time.monotonic() - running.started_at)
+        details.append(f"released_stuck_step={label}:{elapsed:.1f}s")
+    return details
 
 
 def _settings(settings: Settings | None) -> Settings:
@@ -59,7 +163,7 @@ def get_purchase_job(job_id: str, settings: Settings | None = None) -> PurchaseJ
     return job
 
 
-def run_compuzone_order_step(job_id: str, settings: Settings | None = None) -> PurchaseJob:
+def run_compuzone_order_step(job_id: str, settings: Settings | None = None, force_restart: bool = False) -> PurchaseJob:
     cfg = _settings(settings)
     if cfg.dry_run:
         raise ValueError(
@@ -68,6 +172,10 @@ def run_compuzone_order_step(job_id: str, settings: Settings | None = None) -> P
         )
     job = get_purchase_job(job_id, cfg)
     guard_key = f"compuzone:{cfg.compuzone_profile_dir.resolve()}"
+    if force_restart:
+        reset_details = _reset_browser_step("compuzone", guard_key, cfg.compuzone_profile_dir)
+        if reset_details:
+            db.append_log(cfg.db_path, job_id, "이전 컴퓨존 자동화 세션을 정리했습니다: " + "; ".join(reset_details))
     try:
         with _step_guard("컴퓨존 주문/견적", guard_key):
             db.append_log(cfg.db_path, job_id, "컴퓨존 장바구니/무통장 주문 생성을 시작합니다.")

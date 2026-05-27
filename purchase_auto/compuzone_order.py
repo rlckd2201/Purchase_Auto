@@ -723,6 +723,9 @@ def _wait_for_cart_insert_iframe(page) -> dict[str, str]:
         page.wait_for_function(
             """
             previousSrc => {
+              if (/\\/bsk\\/basket_main\\.htm/i.test(String(window.location.href || ''))) {
+                return true;
+              }
               const iframe = document.getElementById('common_iframe');
               if (!iframe) return false;
               const src = String(iframe.getAttribute('src') || iframe.src || '');
@@ -730,9 +733,12 @@ def _wait_for_cart_insert_iframe(page) -> dict[str, str]:
             }
             """,
             arg=before,
-            timeout=8000,
+            timeout=2500,
         )
     except Exception:
+        return _iframe_cart_insert_debug(page)
+
+    if re.search(r"/bsk/basket_main\.htm", page.url, re.IGNORECASE):
         return _iframe_cart_insert_debug(page)
 
     try:
@@ -749,68 +755,88 @@ def _wait_for_cart_insert_iframe(page) -> dict[str, str]:
               }
             }
             """,
-            timeout=12000,
+            timeout=3000,
         )
     except Exception:
         pass
-    page.wait_for_timeout(800)
+    page.wait_for_timeout(300)
     return _iframe_cart_insert_debug(page)
 
 
 def _click_add_to_cart(page) -> dict[str, object]:
     scoped_selectors = [
+        ".total_price .btn_area a.cart[onclick*='basket_insert_detail']",
+        ".total_price .btn_area button.cart[onclick*='basket_insert_detail']",
+        ".total_price .btn_area a[onclick*='basket_insert_detail']",
+        ".total_price .btn_area button[onclick*='basket_insert_detail']",
+        ".total_price .btn_area a.cart[href*='new_recommendpc_insert']",
+        ".total_price .btn_area a[href*='new_recommendpc_insert']:not([href*='_order'])",
+        ".total_price .btn_area a[onclick*='new_recommendpc_insert']:not([onclick*='_order'])",
+        ".total_price .btn_area button.cart[onclick*='new_recommendpc_insert']",
+        ".total_price .btn_area button[onclick*='new_recommendpc_insert']:not([onclick*='_order'])",
+        ".total_price .btn_area a.cart[href*='new_compuzonepremiumpc_insert']",
+        ".total_price .btn_area a[href*='new_compuzonepremiumpc_insert']:not([href*='_order'])",
+        ".total_price .btn_area a[onclick*='new_compuzonepremiumpc_insert']:not([onclick*='_order'])",
+        ".total_price .btn_area button.cart[onclick*='new_compuzonepremiumpc_insert']",
+        ".total_price .btn_area button[onclick*='new_compuzonepremiumpc_insert']:not([onclick*='_order'])",
+        ".total_price .btn_area a.cart[onclick*='basket_insert_direct']",
+        ".total_price .btn_area button.cart[onclick*='basket_insert_direct']",
         ".total_price .btn_area a.cart[onclick*='option_insert']",
         ".total_price .btn_area a[onclick*='option_insert'][onclick*='cart']",
         ".total_price .btn_area a[onclick*='option_insert'][onclick*='Cart']",
         ".total_price .btn_area button[onclick*='option_insert'][onclick*='cart']",
         ".total_price .btn_area button[onclick*='option_insert'][onclick*='Cart']",
-        ".total_price .btn_area a.cart[onclick*='basket_insert_detail']",
-        ".total_price .btn_area button.cart[onclick*='basket_insert_detail']",
-        ".total_price .btn_area a[onclick*='basket_insert_detail']",
-        ".total_price .btn_area button[onclick*='basket_insert_detail']",
-        ".total_price .btn_area a.cart[onclick*='basket_insert_direct']",
-        ".total_price .btn_area button.cart[onclick*='basket_insert_direct']",
-        ".total_price .btn_area a.cart[href*='new_recommendpc_insert']",
-        ".total_price .btn_area button.cart[onclick*='new_recommendpc_insert']",
-        ".total_price .btn_area a.cart[href*='new_compuzonepremiumpc_insert']",
-        ".total_price .btn_area button.cart[onclick*='new_compuzonepremiumpc_insert']",
         ".total_price .btn_area button:has-text('장바구니')",
         ".total_price .btn_area a:has-text('장바구니')",
         ".total_price .btn_area input[value*='장바구니']",
+        ".btn_area a[onclick*='basket_insert_detail']",
+        ".btn_area button[onclick*='basket_insert_detail']",
+        ".btn_area a.cart[href*='new_recommendpc_insert']",
+        ".btn_area a[href*='new_recommendpc_insert']:not([href*='_order'])",
+        ".btn_area a[onclick*='new_recommendpc_insert']:not([onclick*='_order'])",
+        ".btn_area button.cart[onclick*='new_recommendpc_insert']",
+        ".btn_area button[onclick*='new_recommendpc_insert']:not([onclick*='_order'])",
+        ".btn_area a.cart[href*='new_compuzonepremiumpc_insert']",
+        ".btn_area a[href*='new_compuzonepremiumpc_insert']:not([href*='_order'])",
+        ".btn_area a[onclick*='new_compuzonepremiumpc_insert']:not([onclick*='_order'])",
+        ".btn_area button.cart[onclick*='new_compuzonepremiumpc_insert']",
+        ".btn_area button[onclick*='new_compuzonepremiumpc_insert']:not([onclick*='_order'])",
+        ".btn_area a.cart[onclick*='basket_insert_direct']",
+        ".btn_area button.cart[onclick*='basket_insert_direct']",
         ".btn_area a.cart[onclick*='option_insert']",
         ".btn_area a[onclick*='option_insert'][onclick*='cart']",
         ".btn_area button[onclick*='option_insert'][onclick*='cart']",
-        ".btn_area a[onclick*='basket_insert_detail']",
-        ".btn_area button[onclick*='basket_insert_detail']",
-        ".btn_area a.cart[onclick*='basket_insert_direct']",
-        ".btn_area button.cart[onclick*='basket_insert_direct']",
-        ".btn_area a.cart[href*='new_recommendpc_insert']",
-        ".btn_area button.cart[onclick*='new_recommendpc_insert']",
-        ".btn_area a.cart[href*='new_compuzonepremiumpc_insert']",
-        ".btn_area button.cart[onclick*='new_compuzonepremiumpc_insert']",
         ".btn_area button:has-text('장바구니')",
         ".btn_area a:has-text('장바구니')",
         ".btn_area input[value*='장바구니']",
+        "a[onclick*='basket_insert_detail']",
+        "button[onclick*='basket_insert_detail']",
+        "a.cart[href*='new_recommendpc_insert']",
+        "a[href*='new_recommendpc_insert']:not([href*='_order'])",
+        "a[onclick*='new_recommendpc_insert']:not([onclick*='_order'])",
+        "button.cart[onclick*='new_recommendpc_insert']",
+        "button[onclick*='new_recommendpc_insert']:not([onclick*='_order'])",
+        "a.cart[href*='new_compuzonepremiumpc_insert']",
+        "a[href*='new_compuzonepremiumpc_insert']:not([href*='_order'])",
+        "a[onclick*='new_compuzonepremiumpc_insert']:not([onclick*='_order'])",
+        "button.cart[onclick*='new_compuzonepremiumpc_insert']",
+        "button[onclick*='new_compuzonepremiumpc_insert']:not([onclick*='_order'])",
+        "a.cart[onclick*='basket_insert_direct']",
+        "button.cart[onclick*='basket_insert_direct']",
         "a.cart[onclick*='option_insert']",
         "a[onclick*='option_insert'][onclick*='cart']",
         "a[onclick*='option_insert'][onclick*='Cart']",
         "button[onclick*='option_insert'][onclick*='cart']",
         "button[onclick*='option_insert'][onclick*='Cart']",
-        "a[onclick*='basket_insert_detail']",
-        "button[onclick*='basket_insert_detail']",
-        "a.cart[onclick*='basket_insert_direct']",
-        "button.cart[onclick*='basket_insert_direct']",
-        "a.cart[href*='new_recommendpc_insert']",
-        "button.cart[onclick*='new_recommendpc_insert']",
-        "a.cart[href*='new_compuzonepremiumpc_insert']",
-        "button.cart[onclick*='new_compuzonepremiumpc_insert']",
         "input[value*='장바구니']",
     ]
     for selector in scoped_selectors:
         locator = page.locator(selector).first
         try:
+            if locator.count() <= 0:
+                continue
             element_debug = _locator_debug(locator)
-            locator.click(timeout=2500)
+            locator.click(timeout=700)
             return {"method": "selector", "selector": selector, "element": element_debug}
         except Exception:
             continue
@@ -985,7 +1011,7 @@ def _confirm_cart_add(
     cart_click: dict[str, object] | None = None,
     browser_diagnostics: dict[str, list[str]] | None = None,
 ) -> None:
-    page.wait_for_timeout(1200)
+    page.wait_for_timeout(400)
     if _cart_page_contains_products(page, expected_count, expected_marker_groups):
         return
 

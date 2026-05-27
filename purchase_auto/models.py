@@ -43,6 +43,7 @@ class CreatePurchaseJobRequest(BaseModel):
 
 class RunCompuzoneOrderRequest(BaseModel):
     compuzone_login_id: str | None = None
+    force_restart: bool = True
 
 
 class SubmitApprovalRequest(BaseModel):

@@ -127,7 +127,8 @@ def get_job(job_id: str) -> PurchaseJob:
 @app.post("/api/purchase-jobs/{job_id}/run-compuzone-order", response_model=RunStepResponse)
 def run_order(job_id: str, request: RunCompuzoneOrderRequest | None = None) -> RunStepResponse:
     try:
-        job = run_compuzone_order_step(job_id, _settings_for_compuzone(request))
+        force_restart = request.force_restart if request else True
+        job = run_compuzone_order_step(job_id, _settings_for_compuzone(request), force_restart=force_restart)
         return RunStepResponse(job=job, message="컴퓨존 무통장 주문 및 견적서 저장 단계가 완료되었습니다.")
     except Exception as exc:
         raise _http_error(exc) from exc
