@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 
 import pytest
 
+from purchase_auto import compuzone_order
 from purchase_auto.config import Settings
 from purchase_auto.compuzone_order import (
     CompuzoneProductLine,
@@ -354,11 +355,20 @@ def test_compuzone_cart_add_does_not_use_direct_buy_button() -> None:
     assert '".btn_area a.cart",' not in lines
     assert "a.buy[onclick*='basket_insert_direct']" not in source
     assert "button[onclick*='basket_insert_direct']" not in source
+    assert "a.cart[onclick*='basket_insert_detail']" in source
     assert "a.cart[onclick*='basket_insert_direct']" in source
     assert "basket_insert_detail" in source
     assert "hasDetailBasketAction" in source
     assert "isBasketPageLink" in source
     assert "hasDirectBasketAction && !hasCartText && !hasCartClass" in source
+
+
+def test_compuzone_cart_add_waits_for_hidden_iframe_result() -> None:
+    source = inspect.getsource(compuzone_order)
+
+    assert "common_iframe" in source
+    assert "_wait_for_cart_insert_iframe" in source
+    assert "browser_diag=" in source
 
 
 class _FakeProductPage:

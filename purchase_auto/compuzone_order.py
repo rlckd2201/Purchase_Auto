@@ -11,6 +11,13 @@ from .models import PurchaseJob
 from .pdf import write_minimal_pdf
 
 
+_BROWSER_DIAGNOSTIC_LIMIT = 16
+_RELEVANT_RESPONSE_RE = re.compile(
+    r"(order_function|product_detail_opt_function|basket|bsk|cart|buy|buyea)",
+    re.IGNORECASE,
+)
+
+
 class AutomationNotEnabledError(RuntimeError):
     pass
 
@@ -135,6 +142,7 @@ def _live_order(job: PurchaseJob, settings: Settings) -> CompuzoneOrderResult:
             )
         page = context.new_page()
         dialog_messages: list[str] = []
+        browser_diagnostics = _attach_browser_diagnostics(page)
 
         def _accept_dialog(dialog) -> None:
             try:
@@ -149,7 +157,7 @@ def _live_order(job: PurchaseJob, settings: Settings) -> CompuzoneOrderResult:
             if len(job.items) == 1:
                 product_lines = _open_single_item_order_page(page, job.items[0], dialog_messages)
             else:
-                product_lines = _open_cart_order_page(page, job, settings, dialog_messages)
+                product_lines = _open_cart_order_page(page, job, settings, dialog_messages, browser_diagnostics)
             _raise_if_login_required(page)
             _prepare_order_page(page, settings, job)
             product_lines = _merge_product_lines(product_lines, _extract_order_page_product_lines(page, job))
@@ -179,6 +187,76 @@ def _live_order(job: PurchaseJob, settings: Settings) -> CompuzoneOrderResult:
         finally:
             if close_context:
                 context.close()
+
+
+def _append_limited(values: list[str], value: str, limit: int = _BROWSER_DIAGNOSTIC_LIMIT) -> None:
+    value = re.sub(r"\s+", " ", str(value)).strip()
+    if not value:
+        return
+    values.append(value[:1000])
+    if len(values) > limit:
+        del values[0 : len(values) - limit]
+
+
+def _request_failure_text(request) -> str:
+    failure = getattr(request, "failure", None)
+    try:
+        failure = failure() if callable(failure) else failure
+    except Exception as exc:
+        failure = exc
+    return str(failure or "")
+
+
+def _attach_browser_diagnostics(page) -> dict[str, list[str]]:
+    events: dict[str, list[str]] = {
+        "console": [],
+        "pageerror": [],
+        "requestfailed": [],
+        "responses": [],
+    }
+
+    def _on_console(message) -> None:
+        try:
+            text = f"{message.type}: {message.text}"
+        except Exception as exc:
+            text = f"console capture failed: {exc}"
+        _append_limited(events["console"], text)
+
+    def _on_page_error(error) -> None:
+        _append_limited(events["pageerror"], str(error))
+
+    def _on_request_failed(request) -> None:
+        try:
+            text = f"{request.method} {request.url} {_request_failure_text(request)}"
+        except Exception as exc:
+            text = f"requestfailed capture failed: {exc}"
+        _append_limited(events["requestfailed"], text)
+
+    def _on_response(response) -> None:
+        try:
+            url = response.url
+            status = response.status
+            if status >= 400 or _RELEVANT_RESPONSE_RE.search(url):
+                _append_limited(events["responses"], f"{status} {url}")
+        except Exception as exc:
+            _append_limited(events["responses"], f"response capture failed: {exc}")
+
+    page.on("console", _on_console)
+    page.on("pageerror", _on_page_error)
+    page.on("requestfailed", _on_request_failed)
+    page.on("response", _on_response)
+    return events
+
+
+def _format_browser_diagnostics(events: dict[str, list[str]] | None) -> str:
+    if not events:
+        return ""
+    parts = []
+    for key in ("requestfailed", "responses", "console", "pageerror"):
+        values = events.get(key) or []
+        if values:
+            parts.append(f"{key}={values[-5:]}")
+    return " ".join(parts)
 
 
 def _save_debug_screenshot(page, job: PurchaseJob, settings: Settings, stem: str) -> None:
@@ -218,6 +296,7 @@ def _open_cart_order_page(
     job: PurchaseJob,
     settings: Settings,
     dialog_messages: list[str],
+    browser_diagnostics: dict[str, list[str]] | None = None,
 ) -> list[CompuzoneProductLine]:
     if settings.compuzone_clear_cart_before_order:
         _clear_cart(page, settings)
@@ -232,6 +311,9 @@ def _open_cart_order_page(
         product_line = _product_line_from_detail_page(page, item)
         dialog_start = len(dialog_messages)
         cart_click = _click_add_to_cart(page)
+        iframe_detail = _wait_for_cart_insert_iframe(page)
+        if iframe_detail:
+            cart_click["iframe"] = iframe_detail
         _raise_if_dialog_blocked_order(dialog_messages, dialog_start, item)
         expected_marker_groups.append(product_markers)
         if product_line:
@@ -245,6 +327,7 @@ def _open_cart_order_page(
             dialog_messages,
             dialog_start,
             cart_click,
+            browser_diagnostics,
         )
 
     page.goto(settings.compuzone_cart_url, wait_until="domcontentloaded", timeout=60000)
@@ -575,6 +658,99 @@ def _choose_unit_price(values, quantity: int) -> int | None:
     return prices[0]
 
 
+def _locator_debug(locator) -> dict[str, object]:
+    try:
+        result = locator.evaluate(
+            """
+            element => ({
+              tag: element.tagName,
+              text: String(element.innerText || element.value || element.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 160),
+              className: String(element.className || '').slice(0, 120),
+              id: String(element.id || '').slice(0, 80),
+              href: String(element.getAttribute('href') || '').slice(0, 200),
+              onclick: String(element.getAttribute('onclick') || '').slice(0, 260),
+            })
+            """
+        )
+        return result if isinstance(result, dict) else {}
+    except Exception:
+        return {}
+
+
+def _iframe_cart_insert_debug(page) -> dict[str, str]:
+    try:
+        result = page.evaluate(
+            """
+            () => {
+              const iframe = document.getElementById('common_iframe');
+              if (!iframe) return {};
+              let text = '';
+              let title = '';
+              let readyState = '';
+              try {
+                const doc = iframe.contentDocument || iframe.contentWindow?.document;
+                if (doc) {
+                  readyState = String(doc.readyState || '');
+                  title = String(doc.title || '');
+                  text = String(doc.body?.innerText || doc.body?.textContent || '').replace(/\\s+/g, ' ').trim();
+                }
+              } catch (error) {
+                text = `iframe access failed: ${error && error.message ? error.message : error}`;
+              }
+              return {
+                src: String(iframe.getAttribute('src') || iframe.src || '').slice(0, 600),
+                readyState: readyState.slice(0, 80),
+                title: title.slice(0, 120),
+                text: text.slice(0, 600),
+              };
+            }
+            """
+        )
+        return result if isinstance(result, dict) else {}
+    except Exception as exc:
+        return {"error": str(exc)[:500]}
+
+
+def _wait_for_cart_insert_iframe(page) -> dict[str, str]:
+    before = _iframe_cart_insert_debug(page).get("src", "")
+    try:
+        page.wait_for_function(
+            """
+            previousSrc => {
+              const iframe = document.getElementById('common_iframe');
+              if (!iframe) return false;
+              const src = String(iframe.getAttribute('src') || iframe.src || '');
+              return Boolean(src) && src !== previousSrc;
+            }
+            """,
+            arg=before,
+            timeout=8000,
+        )
+    except Exception:
+        return _iframe_cart_insert_debug(page)
+
+    try:
+        page.wait_for_function(
+            """
+            () => {
+              const iframe = document.getElementById('common_iframe');
+              if (!iframe) return false;
+              try {
+                const doc = iframe.contentDocument || iframe.contentWindow?.document;
+                return Boolean(doc) && ['interactive', 'complete'].includes(String(doc.readyState || ''));
+              } catch (error) {
+                return true;
+              }
+            }
+            """,
+            timeout=12000,
+        )
+    except Exception:
+        pass
+    page.wait_for_timeout(800)
+    return _iframe_cart_insert_debug(page)
+
+
 def _click_add_to_cart(page) -> dict[str, object]:
     scoped_selectors = [
         ".total_price .btn_area a.cart[onclick*='option_insert']",
@@ -582,6 +758,8 @@ def _click_add_to_cart(page) -> dict[str, object]:
         ".total_price .btn_area a[onclick*='option_insert'][onclick*='Cart']",
         ".total_price .btn_area button[onclick*='option_insert'][onclick*='cart']",
         ".total_price .btn_area button[onclick*='option_insert'][onclick*='Cart']",
+        ".total_price .btn_area a.cart[onclick*='basket_insert_detail']",
+        ".total_price .btn_area button.cart[onclick*='basket_insert_detail']",
         ".total_price .btn_area a[onclick*='basket_insert_detail']",
         ".total_price .btn_area button[onclick*='basket_insert_detail']",
         ".total_price .btn_area a.cart[onclick*='basket_insert_direct']",
@@ -613,8 +791,9 @@ def _click_add_to_cart(page) -> dict[str, object]:
     for selector in scoped_selectors:
         locator = page.locator(selector).first
         try:
+            element_debug = _locator_debug(locator)
             locator.click(timeout=2500)
-            return {"method": "selector", "selector": selector}
+            return {"method": "selector", "selector": selector, "element": element_debug}
         except Exception:
             continue
 
@@ -784,6 +963,7 @@ def _confirm_cart_add(
     dialog_messages: list[str],
     dialog_start: int,
     cart_click: dict[str, object] | None = None,
+    browser_diagnostics: dict[str, list[str]] | None = None,
 ) -> None:
     page.wait_for_timeout(1200)
     if _cart_page_contains_products(page, expected_count, expected_marker_groups):
@@ -806,9 +986,12 @@ def _confirm_cart_add(
     if dialog_detail:
         dialog_detail = f" 컴퓨존알림={dialog_detail}"
     click_detail = f" 클릭정보={cart_click}" if cart_click else ""
+    browser_detail = _format_browser_diagnostics(browser_diagnostics)
+    if browser_detail:
+        browser_detail = f" browser_diag={browser_detail}"
     raise RuntimeError(
         f"상품이 장바구니에 담기지 않았습니다:{detail} {item.url} "
-        f"현재페이지={page.url}{dialog_detail}{click_detail} 화면요약={_page_text_excerpt(page)}"
+        f"현재페이지={page.url}{dialog_detail}{click_detail}{browser_detail} 화면요약={_page_text_excerpt(page)}"
     )
 
 
