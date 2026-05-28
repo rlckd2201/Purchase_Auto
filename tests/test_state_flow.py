@@ -29,7 +29,9 @@ from purchase_auto.groupware_approval import (
     _approval_title,
     _delegate_level_for_job,
     _fallback_groupware_form_url,
+    _groupware_text_pattern,
     _groupware_form_env_name,
+    _normalize_groupware_label_text,
     _recipient_rows_for_job,
 )
 from purchase_auto.models import CreatePurchaseJobRequest, PurchaseJob, PurchaseItem, PurchaseStatus, RunCompuzoneOrderRequest
@@ -90,15 +92,24 @@ def _request() -> CreatePurchaseJobRequest:
     )
 
 
-def test_groupware_missing_ilgang_url_falls_back_to_document_new(tmp_path: Path) -> None:
+def test_groupware_missing_ilgang_url_falls_back_to_approval_home(tmp_path: Path) -> None:
     settings = _settings(tmp_path)
 
-    assert _fallback_groupware_form_url(settings) == "https://gw.dae-seung.co.kr/app/approval/document/new"
+    assert _fallback_groupware_form_url(settings) == "https://gw.dae-seung.co.kr/app/approval"
 
 
 def test_groupware_form_env_name_handles_known_corps() -> None:
     assert _groupware_form_env_name("ilgang") == "PURCHASE_AUTO_GROUPWARE_FORM_URL_ILGANG"
     assert _groupware_form_env_name("daeseung_precision") == "PURCHASE_AUTO_GROUPWARE_FORM_URL_DAESEUNG_PRECISION"
+
+
+def test_groupware_form_label_matching_tolerates_spacing_and_dash_variants() -> None:
+    expected = "일강 - (경영)기안용지"
+    pattern = _groupware_text_pattern(expected)
+
+    assert _normalize_groupware_label_text(expected) == _normalize_groupware_label_text("일강-(경영) 기안용지")
+    assert pattern.search("일강-(경영)기안용지")
+    assert pattern.search("일강 – (경영) 기안용지")
 
 
 def test_dry_run_blocks_live_steps(tmp_path: Path) -> None:

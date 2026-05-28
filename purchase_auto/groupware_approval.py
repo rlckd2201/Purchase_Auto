@@ -46,6 +46,9 @@ FACTORY_BY_BUSINESS_NUMBER = {
 _FACTORY_RE = re.compile(r"\b([DP])\s*([1-4])\s*공장\b", re.IGNORECASE)
 _BUSINESS_NUMBER_RE = re.compile(r"\b(\d{3})-?(\d{2})-?(\d{5})\b")
 _GROUPWARE_FORM_URL_RE = re.compile(r".*/app/approval/document/new/[^/?#]+/[^/?#]+.*")
+_GROUPWARE_DASHES = "-–—−"
+_GROUPWARE_FORM_LABEL_SELECTOR = "a, button, [role='button'], [onclick], td, th, tr, li, div, span"
+_GROUPWARE_NAV_SELECTOR = "a, button, [role='button'], [onclick], li, div, span"
 _PRODUCT_CODE_LINE_RE = re.compile(
     r"^\s*(?:제품코드|상품코드|상품번호|Product\s*No\.?)\s*[:：]?\s*\d+\s*$",
     re.IGNORECASE,
@@ -161,7 +164,7 @@ def _live_submit(job: PurchaseJob, settings: Settings) -> ApprovalResult:
 
 
 def _fallback_groupware_form_url(settings: Settings) -> str:
-    return f"{settings.groupware_base_url.rstrip('/')}/app/approval/document/new"
+    return f"{settings.groupware_base_url.rstrip('/')}/app/approval"
 
 
 def _groupware_form_env_name(corp_code: str) -> str:
@@ -174,6 +177,164 @@ def _groupware_form_env_name(corp_code: str) -> str:
 
 def _is_groupware_form_url(url: str) -> bool:
     return bool(_GROUPWARE_FORM_URL_RE.search(url or ""))
+
+
+def _normalize_groupware_label_text(value: str) -> str:
+    text = (value or "").strip()
+    for dash in _GROUPWARE_DASHES[1:]:
+        text = text.replace(dash, "-")
+    return re.sub(r"[\s\u00a0\u200b]+", "", text).lower()
+
+
+def _groupware_text_pattern(value: str) -> re.Pattern[str]:
+    pieces: list[str] = []
+    dash_class = f"[{re.escape(_GROUPWARE_DASHES)}]"
+    for char in value or "":
+        if char.isspace() or char in "\u00a0\u200b":
+            continue
+        if char in _GROUPWARE_DASHES:
+            pieces.append(dash_class)
+        else:
+            pieces.append(re.escape(char))
+    if not pieces:
+        return re.compile(r"a\A")
+    return re.compile(r"\s*".join(pieces), re.IGNORECASE)
+
+
+def _groupware_text_variants(value: str) -> tuple[str, ...]:
+    raw = (value or "").strip()
+    variants = [
+        raw,
+        re.sub(rf"\s*[{re.escape(_GROUPWARE_DASHES)}]\s*", " - ", raw),
+        re.sub(rf"\s*[{re.escape(_GROUPWARE_DASHES)}]\s*", "-", raw),
+    ]
+    if ")기안" in raw:
+        variants.append(raw.replace(")기안", ") 기안"))
+    return tuple(dict.fromkeys(part for part in variants if part))
+
+
+def _groupware_search_scopes(page):
+    yield "page", page
+    main_frame = getattr(page, "main_frame", None)
+    for index, frame in enumerate(getattr(page, "frames", []) or []):
+        if frame is main_frame:
+            continue
+        yield f"frame[{index}]", frame
+
+
+def _groupware_text_locator_specs(scope, text: str, selector: str, scope_label: str):
+    for variant in _groupware_text_variants(text):
+        get_by_text = getattr(scope, "get_by_text", None)
+        if get_by_text is not None:
+            yield f"{scope_label} exact {variant}", lambda value=variant, getter=get_by_text: getter(value, exact=True)
+        yield (
+            f"{scope_label} contains {variant}",
+            lambda value=variant, target_scope=scope: target_scope.locator(selector).filter(has_text=value),
+        )
+    pattern = _groupware_text_pattern(text)
+    yield (
+        f"{scope_label} loose {text}",
+        lambda target_scope=scope, text_pattern=pattern: target_scope.locator(selector).filter(has_text=text_pattern),
+    )
+
+
+def _iter_groupware_text_matches(page, text: str, selector: str, click_errors: list[str], max_count: int):
+    seen: set[str] = set()
+    for scope_label, scope in _groupware_search_scopes(page):
+        for label, factory in _groupware_text_locator_specs(scope, text, selector, scope_label):
+            try:
+                locator = factory()
+                count = min(locator.count(), max_count)
+            except Exception as exc:
+                click_errors.append(f"{label}: {exc}")
+                continue
+
+            for index in range(count):
+                element = locator.nth(index)
+                key = f"{label}[{index}]"
+                if key in seen:
+                    continue
+                seen.add(key)
+                yield key, element
+
+
+def _groupware_click_target(element):
+    target = element.locator(
+        "xpath=ancestor-or-self::*[self::a or self::button or self::tr or self::li or @role='button' or @onclick][1]"
+    )
+    if target.count() == 0:
+        return element
+    return target.first
+
+
+def _groupware_page_contains_text(page, text: str) -> bool:
+    expected = _normalize_groupware_label_text(text)
+    if not expected:
+        return False
+    script = """([expected]) => {
+        const normalize = (value) => (value || '')
+            .replace(/[–—−]/g, '-')
+            .replace(/[\\s\\u00a0\\u200b]+/g, '')
+            .toLowerCase();
+        return normalize(document.body ? document.body.innerText || '' : '').includes(expected);
+    }"""
+    for _, scope in _groupware_search_scopes(page):
+        try:
+            if scope.evaluate(script, [expected]):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _wait_for_groupware_text(page, text: str, timeout: int = 5000) -> None:
+    step = 500
+    for _ in range(max(1, timeout // step)):
+        if _groupware_page_contains_text(page, text):
+            return
+        try:
+            page.wait_for_timeout(step)
+        except Exception:
+            return
+
+
+def _looks_like_groupware_editor(page) -> bool:
+    indicators = [
+        "#subject",
+        "input[name='subject']",
+        "input[name='title']",
+        "input[id*='subject']",
+    ]
+    for selector in indicators:
+        try:
+            if page.locator(selector).first.is_visible(timeout=500):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _wait_for_groupware_form_page(page, timeout: int = 15000) -> bool:
+    if _is_groupware_form_url(page.url):
+        return True
+    try:
+        page.wait_for_url(_GROUPWARE_FORM_URL_RE, timeout=min(timeout, 5000))
+        return True
+    except Exception:
+        pass
+    if _is_groupware_form_url(page.url) or _looks_like_groupware_editor(page):
+        return True
+
+    step = 500
+    remaining = max(0, timeout - 5000)
+    for _ in range(max(1, remaining // step)):
+        if _is_groupware_form_url(page.url) or _looks_like_groupware_editor(page):
+            return True
+        try:
+            page.wait_for_timeout(step)
+        except Exception:
+            break
+    return _is_groupware_form_url(page.url) or _looks_like_groupware_editor(page)
 
 
 def _open_groupware_form_by_label(page, corp: CorpConfig, settings: Settings):
@@ -220,95 +381,60 @@ def _open_groupware_form_by_label(page, corp: CorpConfig, settings: Settings):
 
 
 def _click_groupware_form_label(page, form_label: str, click_errors: list[str]):
-    locator_specs = [
-        ("exact text", lambda: page.get_by_text(form_label, exact=True)),
-        ("contains text", lambda: page.locator("a, button, [role='button'], td, div, span").filter(has_text=form_label)),
-    ]
-    for label, factory in locator_specs:
+    _wait_for_groupware_text(page, form_label)
+    for label, element in _iter_groupware_text_matches(
+        page, form_label, _GROUPWARE_FORM_LABEL_SELECTOR, click_errors, 30
+    ):
         try:
-            locator = factory()
-            count = min(locator.count(), 20)
+            if not element.is_visible(timeout=1000):
+                continue
+            target = _groupware_click_target(element)
+            next_page = _click_groupware_target(page, target, click_errors, label)
+            if _wait_for_groupware_form_page(next_page):
+                return next_page
+            confirmed_page = _confirm_groupware_form_selection(next_page, click_errors)
+            if confirmed_page is not None:
+                return confirmed_page
         except Exception as exc:
             click_errors.append(f"{label}: {exc}")
-            continue
-
-        for index in range(count):
-            element = locator.nth(index)
-            try:
-                if not element.is_visible(timeout=1000):
-                    continue
-                target = element.locator("xpath=ancestor-or-self::*[self::a or self::button or @role='button'][1]")
-                if target.count() == 0:
-                    target = element
-                next_page = _click_groupware_target(page, target.first, click_errors, f"{label}[{index}]")
-                try:
-                    next_page.wait_for_url(_GROUPWARE_FORM_URL_RE, timeout=15000)
-                    return next_page
-                except Exception:
-                    if _is_groupware_form_url(next_page.url):
-                        return next_page
-                    continue
-            except Exception as exc:
-                click_errors.append(f"{label}[{index}]: {exc}")
     return None
 
 
 def _dismiss_groupware_error_dialog(page) -> None:
     try:
-        body_text = page.locator("body").inner_text(timeout=1000)
+        body_text = _page_text_with_frames(page)
     except Exception:
         return
     if "결재문서를 열람할 수 없습니다" not in body_text and "일시적인 오류" not in body_text:
         return
 
-    close_locators = [
-        lambda: page.get_by_role("button", name="닫기"),
-        lambda: page.get_by_text("닫기", exact=True),
-        lambda: page.locator("button, a, [role='button']").filter(has_text="닫기"),
-    ]
-    for factory in close_locators:
-        try:
-            locator = factory()
-            count = min(locator.count(), 5)
-        except Exception:
-            continue
-        for index in range(count):
+    close_errors: list[str] = []
+    for text in ("닫기", "확인"):
+        for _, element in _iter_groupware_text_matches(
+            page, text, "button, a, [role='button']", close_errors, 10
+        ):
             try:
-                element = locator.nth(index)
                 if element.is_visible(timeout=500):
                     element.click(timeout=1500)
+                    page.wait_for_timeout(300)
                     return
             except Exception:
                 continue
 
 
 def _open_groupware_form_picker_candidates(page, settings: Settings, click_errors: list[str]):
-    navigation_labels = ("새 결재", "새결재", "기안하기", "결재 작성")
+    navigation_labels = ("새 결재 진행", "새 결재", "새결재", "기안하기", "결재 작성")
     for text in navigation_labels:
-        locator_specs = [
-            (f"nav exact {text}", lambda value=text: page.get_by_text(value, exact=True)),
-            (
-                f"nav contains {text}",
-                lambda value=text: page.locator("a, button, [role='button']").filter(has_text=value),
-            ),
-        ]
-        for label, factory in locator_specs:
+        _wait_for_groupware_text(page, text, timeout=1500)
+        for label, element in _iter_groupware_text_matches(page, text, _GROUPWARE_NAV_SELECTOR, click_errors, 15):
             try:
-                locator = factory()
-                count = min(locator.count(), 10)
+                if not element.is_visible(timeout=1000):
+                    continue
+                target = _groupware_click_target(element)
+                page = _click_groupware_target(page, target, click_errors, label)
+                yield page
             except Exception as exc:
                 click_errors.append(f"{label}: {exc}")
-                continue
-
-            for index in range(count):
-                try:
-                    element = locator.nth(index)
-                    if not element.is_visible(timeout=1000):
-                        continue
-                    page = _click_groupware_target(page, element, click_errors, f"{label}[{index}]")
-                    yield page
-                except Exception as exc:
-                    click_errors.append(f"{label}[{index}]: {exc}")
 
     for url in _groupware_form_picker_urls(settings):
         if url.rstrip("/") == (page.url or "").rstrip("/"):
@@ -327,9 +453,28 @@ def _open_groupware_form_picker_candidates(page, settings: Settings, click_error
 def _groupware_form_picker_urls(settings: Settings) -> list[str]:
     base_url = settings.groupware_base_url.rstrip("/")
     return [
-        f"{base_url}/app/approval/document/new",
-        f"{base_url}/app/approval/document/new/223",
+        f"{base_url}/app/approval",
     ]
+
+
+def _confirm_groupware_form_selection(page, click_errors: list[str]):
+    selectors = (
+        "#gpopupLayer button, #gpopupLayer a, #gpopupLayer [role='button']",
+        ".go_popup button, .go_popup a, .go_popup [role='button']",
+        ".layer_normal button, .layer_normal a, .layer_normal [role='button']",
+        "button, a, [role='button']",
+    )
+    for selector in selectors:
+        for label, element in _iter_groupware_text_matches(page, "확인", selector, click_errors, 10):
+            try:
+                if not element.is_visible(timeout=500):
+                    continue
+                next_page = _click_groupware_target(page, element, click_errors, f"form confirm {label}")
+                if _wait_for_groupware_form_page(next_page, timeout=20000):
+                    return next_page
+            except Exception as exc:
+                click_errors.append(f"form confirm {label}: {exc}")
+    return None
 
 
 def _click_groupware_target(page, target, click_errors: list[str], label: str):
