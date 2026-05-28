@@ -45,6 +45,7 @@ FACTORY_BY_BUSINESS_NUMBER = {
 }
 _FACTORY_RE = re.compile(r"\b([DP])\s*([1-4])\s*공장\b", re.IGNORECASE)
 _BUSINESS_NUMBER_RE = re.compile(r"\b(\d{3})-?(\d{2})-?(\d{5})\b")
+_GROUPWARE_FORM_URL_RE = re.compile(r".*/app/approval/document/new/[^/?#]+/[^/?#]+.*")
 _PRODUCT_CODE_LINE_RE = re.compile(
     r"^\s*(?:제품코드|상품코드|상품번호|Product\s*No\.?)\s*[:：]?\s*\d+\s*$",
     re.IGNORECASE,
@@ -128,7 +129,7 @@ def _live_submit(job: PurchaseJob, settings: Settings) -> ApprovalResult:
             page.goto(form_url, wait_until="domcontentloaded", timeout=60000)
             _ensure_groupware_session(page, settings, form_url)
             if not configured_form_url:
-                _open_groupware_form_by_label(page, corp)
+                page = _open_groupware_form_by_label(page, corp, settings)
             body_html = _approval_body_html(job)
             _set_delegate_level(page, _delegate_level_for_job(job))
             _fill_approval_rule(page, _approval_rule_for_job(job))
@@ -172,12 +173,12 @@ def _groupware_form_env_name(corp_code: str) -> str:
 
 
 def _is_groupware_form_url(url: str) -> bool:
-    return bool(re.search(r"/app/approval/document/new/[^/?#]+/[^/?#]+", url or ""))
+    return bool(_GROUPWARE_FORM_URL_RE.search(url or ""))
 
 
-def _open_groupware_form_by_label(page, corp: CorpConfig) -> None:
+def _open_groupware_form_by_label(page, corp: CorpConfig, settings: Settings):
     if _is_groupware_form_url(page.url):
-        return
+        return page
 
     form_label = corp.approval_form_label
     try:
@@ -186,6 +187,39 @@ def _open_groupware_form_by_label(page, corp: CorpConfig) -> None:
         pass
 
     click_errors: list[str] = []
+    _dismiss_groupware_error_dialog(page)
+    opened_page = _click_groupware_form_label(page, form_label, click_errors)
+    if opened_page is not None:
+        return opened_page
+
+    for candidate_page in _open_groupware_form_picker_candidates(page, settings, click_errors):
+        page = candidate_page
+        _dismiss_groupware_error_dialog(page)
+        opened_page = _click_groupware_form_label(page, form_label, click_errors)
+        if opened_page is not None:
+            return opened_page
+
+    body_excerpt = ""
+    try:
+        body_excerpt = page.locator("body").inner_text(timeout=3000)
+        body_excerpt = re.sub(r"\s+", " ", body_excerpt).strip()[:500]
+    except Exception:
+        pass
+
+    detail = f" current_url={page.url}"
+    if body_excerpt:
+        detail += f" body_excerpt={body_excerpt}"
+    if click_errors:
+        detail += f" click_errors={click_errors[:5]}"
+    env_name = _groupware_form_env_name(corp.code)
+    raise RuntimeError(
+        f"{corp.display_name} 그룹웨어 양식 URL이 비어 있고, 기본 작성 화면에서도 "
+        f"'{form_label}' 양식을 찾지 못했습니다. "
+        f"대상 양식을 한 번 열어 {env_name} 값을 설정하세요. {detail}"
+    )
+
+
+def _click_groupware_form_label(page, form_label: str, click_errors: list[str]):
     locator_specs = [
         ("exact text", lambda: page.get_by_text(form_label, exact=True)),
         ("contains text", lambda: page.locator("a, button, [role='button'], td, div, span").filter(has_text=form_label)),
@@ -206,35 +240,124 @@ def _open_groupware_form_by_label(page, corp: CorpConfig) -> None:
                 target = element.locator("xpath=ancestor-or-self::*[self::a or self::button or @role='button'][1]")
                 if target.count() == 0:
                     target = element
-                target.first.click(timeout=5000)
+                next_page = _click_groupware_target(page, target.first, click_errors, f"{label}[{index}]")
                 try:
-                    page.wait_for_url(re.compile(r".*/app/approval/document/new/[^/?#]+/[^/?#]+.*"), timeout=15000)
-                    return
+                    next_page.wait_for_url(_GROUPWARE_FORM_URL_RE, timeout=15000)
+                    return next_page
                 except Exception:
-                    if _is_groupware_form_url(page.url):
-                        return
+                    if _is_groupware_form_url(next_page.url):
+                        return next_page
                     continue
             except Exception as exc:
                 click_errors.append(f"{label}[{index}]: {exc}")
+    return None
 
-    body_excerpt = ""
+
+def _dismiss_groupware_error_dialog(page) -> None:
     try:
-        body_excerpt = page.locator("body").inner_text(timeout=3000)
-        body_excerpt = re.sub(r"\s+", " ", body_excerpt).strip()[:500]
+        body_text = page.locator("body").inner_text(timeout=1000)
     except Exception:
-        pass
+        return
+    if "결재문서를 열람할 수 없습니다" not in body_text and "일시적인 오류" not in body_text:
+        return
 
-    detail = f" current_url={page.url}"
-    if body_excerpt:
-        detail += f" body_excerpt={body_excerpt}"
-    if click_errors:
-        detail += f" click_errors={click_errors[:3]}"
-    env_name = _groupware_form_env_name(corp.code)
-    raise RuntimeError(
-        f"{corp.display_name} 그룹웨어 양식 URL이 비어 있고, 기본 작성 화면에서도 "
-        f"'{form_label}' 양식을 찾지 못했습니다. "
-        f"대상 양식을 한 번 열어 {env_name} 값을 설정하세요. {detail}"
-    )
+    close_locators = [
+        lambda: page.get_by_role("button", name="닫기"),
+        lambda: page.get_by_text("닫기", exact=True),
+        lambda: page.locator("button, a, [role='button']").filter(has_text="닫기"),
+    ]
+    for factory in close_locators:
+        try:
+            locator = factory()
+            count = min(locator.count(), 5)
+        except Exception:
+            continue
+        for index in range(count):
+            try:
+                element = locator.nth(index)
+                if element.is_visible(timeout=500):
+                    element.click(timeout=1500)
+                    return
+            except Exception:
+                continue
+
+
+def _open_groupware_form_picker_candidates(page, settings: Settings, click_errors: list[str]):
+    navigation_labels = ("새 결재", "새결재", "기안하기", "결재 작성")
+    for text in navigation_labels:
+        locator_specs = [
+            (f"nav exact {text}", lambda value=text: page.get_by_text(value, exact=True)),
+            (
+                f"nav contains {text}",
+                lambda value=text: page.locator("a, button, [role='button']").filter(has_text=value),
+            ),
+        ]
+        for label, factory in locator_specs:
+            try:
+                locator = factory()
+                count = min(locator.count(), 10)
+            except Exception as exc:
+                click_errors.append(f"{label}: {exc}")
+                continue
+
+            for index in range(count):
+                try:
+                    element = locator.nth(index)
+                    if not element.is_visible(timeout=1000):
+                        continue
+                    page = _click_groupware_target(page, element, click_errors, f"{label}[{index}]")
+                    yield page
+                except Exception as exc:
+                    click_errors.append(f"{label}[{index}]: {exc}")
+
+    for url in _groupware_form_picker_urls(settings):
+        if url.rstrip("/") == (page.url or "").rstrip("/"):
+            continue
+        try:
+            page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            try:
+                page.wait_for_load_state("networkidle", timeout=10000)
+            except Exception:
+                pass
+            yield page
+        except Exception as exc:
+            click_errors.append(f"picker url {url}: {exc}")
+
+
+def _groupware_form_picker_urls(settings: Settings) -> list[str]:
+    base_url = settings.groupware_base_url.rstrip("/")
+    return [
+        f"{base_url}/app/approval/document/new",
+        f"{base_url}/app/approval/document/new/223",
+    ]
+
+
+def _click_groupware_target(page, target, click_errors: list[str], label: str):
+    from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
+
+    try:
+        with page.context.expect_page(timeout=1200) as new_page_info:
+            target.click(timeout=5000)
+        next_page = new_page_info.value
+        next_page.wait_for_load_state("domcontentloaded", timeout=15000)
+        try:
+            next_page.wait_for_load_state("networkidle", timeout=5000)
+        except Exception:
+            pass
+        return next_page
+    except PlaywrightTimeoutError:
+        try:
+            page.wait_for_load_state("domcontentloaded", timeout=10000)
+        except Exception:
+            pass
+        try:
+            page.wait_for_load_state("networkidle", timeout=5000)
+        except Exception:
+            pass
+        return page
+    except Exception as exc:
+        click_errors.append(f"{label}: {exc}")
+        return page
 
 
 def _save_debug_screenshot(page, job: PurchaseJob, settings: Settings, stem: str) -> None:
