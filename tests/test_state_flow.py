@@ -439,6 +439,18 @@ def test_cart_visible_product_count_reads_compuzone_delivery_count() -> None:
     assert _cart_visible_product_count(body) == 2
 
 
+def test_cart_visible_product_count_sums_direct_delivery_sections() -> None:
+    body = (
+        "장바구니\n"
+        "컴퓨존 배송상품 3\n"
+        "상품명/옵션 상품가격 수량 주문금액\n"
+        "업체 직배송상품 1\n"
+        "상품명/옵션 상품가격 수량 주문금액"
+    )
+
+    assert _cart_visible_product_count(body) == 4
+
+
 def test_dialog_excerpt_keeps_compuzone_alert_text() -> None:
     assert _dialog_excerpt(["첫 알림", "두 번째 알림"], 0) == "첫 알림 / 두 번째 알림"
 

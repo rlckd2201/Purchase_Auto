@@ -1300,15 +1300,15 @@ def _cart_page_signature(page, body: str = "") -> str:
 
 def _cart_visible_product_count(body: str) -> int | None:
     compact = _normalize_text(body)
-    patterns = (
-        r"컴퓨존배송상품\(?(\d+)\)?",
-        r"배송상품\(?(\d+)\)?",
-        r"장바구니상품\(?(\d+)\)?",
-    )
-    for pattern in patterns:
-        match = re.search(pattern, compact)
-        if match:
-            return int(match.group(1))
+    delivery_counts = [
+        int(match.group(1))
+        for match in re.finditer(r"(?:컴퓨존|업체직|업체|판매자|제조사|일반)?배송상품\(?(\d+)\)?", compact)
+    ]
+    if delivery_counts:
+        return sum(delivery_counts)
+    match = re.search(r"장바구니상품\(?(\d+)\)?", compact)
+    if match:
+        return int(match.group(1))
     return None
 
 
