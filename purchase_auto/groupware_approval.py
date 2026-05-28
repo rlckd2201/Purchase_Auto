@@ -32,6 +32,7 @@ class ApprovalProductLine:
     quantity: int
     unit_price: int
     amount: int
+    item_index: int = -1
 
 
 FACTORY_BY_BUSINESS_NUMBER = {
@@ -748,7 +749,15 @@ def _approval_product_lines(job: PurchaseJob) -> list[ApprovalProductLine]:
             continue
         if _is_suspicious_approval_product_line(name, quantity, unit_price, amount):
             continue
-        lines.append(ApprovalProductLine(name=name, quantity=quantity, unit_price=unit_price, amount=amount))
+        lines.append(
+            ApprovalProductLine(
+                name=name,
+                quantity=quantity,
+                unit_price=unit_price,
+                amount=amount,
+                item_index=len(lines),
+            )
+        )
     return lines
 
 
@@ -769,6 +778,7 @@ def _document_purchase_label(job: PurchaseJob) -> str:
 
 def _item_document_category(name: str) -> str:
     lowered = name.lower()
+    maker = _maker_from_item(name).lower()
     consumable_markers = ("가방", "케이블", "젠더", "더미", "플러그", "마우스", "키보드")
     if any(marker in lowered or marker in name for marker in consumable_markers):
         return "소모품"
@@ -787,30 +797,81 @@ def _item_document_category(name: str) -> str:
         "프린터",
         "복합기",
         "모니터",
+        "마이크",
+        "웹캠",
+        "스피커",
     )
-    if any(marker in lowered or marker in name for marker in fixture_markers):
+    if any(marker in lowered or marker in name for marker in fixture_markers) or maker in {"fifine", "브리츠"}:
         return "집기비품"
     return "소모품"
 
 
 def _recipient_rows_for_job(job: PurchaseJob) -> list[list[object]]:
-    dept = _memo_field(job, ("지급부서", "부서", "asset_dept", "dept")) or "전산팀"
-    target = _memo_field(job, ("지급대상", "대상", "asset_target", "target")) or "전산팀"
-    purpose = _memo_field(job, ("용도", "asset_purpose", "purpose")) or "업무용"
-    note = _memo_field(job, ("비고", "asset_note", "note")) or ""
     if _document_purchase_label(job) == "소모품":
-        return [[1, dept, target, purpose, note]]
-
-    targets = _split_recipient_targets(target)
-    item_labels = _recipient_item_labels(job)
-    if not item_labels:
+        dept = _memo_field(job, ("지급부서", "부서", "asset_dept", "dept")) or "전산팀"
+        target = _memo_field(job, ("지급대상", "대상", "asset_target", "target")) or "전산팀"
+        purpose = _memo_field(job, ("용도", "asset_purpose", "purpose")) or "업무용"
+        note = _memo_field(job, ("비고", "asset_note", "note")) or ""
         return [[1, dept, target, purpose, note]]
 
     rows: list[list[object]] = []
-    for target_name in targets:
-        for item_label in item_labels:
-            rows.append([len(rows) + 1, dept, target_name, purpose, item_label])
-    return rows
+    product_lines = _approval_product_lines(job)
+    global_dept = _memo_field(job, ("지급부서", "부서", "asset_dept", "dept"))
+    global_target = _memo_field(job, ("지급대상", "대상", "asset_target", "target"))
+    global_purpose = _memo_field(job, ("용도", "asset_purpose", "purpose"))
+    global_note = _memo_field(job, ("비고", "asset_note", "note"))
+
+    if (
+        global_dept
+        and global_target
+        and global_purpose
+        and not any(_item_has_asset_recipient_info(item) for item in job.items)
+    ):
+        item_labels = _recipient_item_labels(job)
+        for target_name in _split_recipient_targets(global_target):
+            for item_label in item_labels:
+                rows.append([len(rows) + 1, global_dept, target_name, global_purpose, global_note or item_label])
+        if rows:
+            return rows
+
+    missing: list[str] = []
+    for line in product_lines:
+        if _item_document_category(line.name) == "소모품":
+            continue
+        item = job.items[line.item_index] if 0 <= line.item_index < len(job.items) else None
+        dept = (getattr(item, "asset_department", None) if item else None) or global_dept
+        target = (getattr(item, "asset_user", None) if item else None) or global_target
+        purpose = (getattr(item, "asset_purpose", None) if item else None) or global_purpose
+        if not dept or not target or not purpose:
+            missing.append(_recipient_line_note(line))
+            continue
+        note = (getattr(item, "asset_note", None) if item else None) or global_note or _recipient_line_note(line)
+        for target_name in _split_recipient_targets(target):
+            rows.append([len(rows) + 1, dept, target_name, purpose, note])
+
+    if missing:
+        targets = ", ".join(missing)
+        raise RuntimeError(
+            "집기비품/소프트웨어 지급대상 정보가 부족합니다. 구매 단계에서 각 대상 품목의 부서, 사용자, 용도를 입력하세요: "
+            f"{targets}"
+        )
+
+    if rows:
+        return rows
+
+    dept = global_dept or "전산팀"
+    target = global_target or "전산팀"
+    purpose = global_purpose or "업무용"
+    return [[1, dept, target, purpose, global_note or ""]]
+
+
+def _item_has_asset_recipient_info(item) -> bool:
+    return bool(
+        getattr(item, "asset_department", None)
+        or getattr(item, "asset_user", None)
+        or getattr(item, "asset_purpose", None)
+        or getattr(item, "asset_note", None)
+    )
 
 
 def _split_recipient_targets(target: str) -> list[str]:
@@ -829,6 +890,19 @@ def _recipient_item_labels(job: PurchaseJob) -> list[str]:
         labels.append(label)
     labels.sort(key=lambda item: (item[0], item[1]))
     return [label for _, label in labels]
+
+
+def _recipient_line_note(line: ApprovalProductLine) -> str:
+    label_pair = _recipient_item_label(line.name)
+    label = label_pair[1] if label_pair else _item_category(line.name)
+    model = _model_from_item(line.name)
+    if model and _compact_compare_text(model) != _compact_compare_text(label):
+        return f"{label} / {model}"
+    return label
+
+
+def _compact_compare_text(value: str) -> str:
+    return re.sub(r"\s+", "", value or "").lower()
 
 
 def _recipient_item_label(name: str) -> tuple[int, str] | None:
@@ -883,8 +957,19 @@ def _parse_int(value: str) -> int | None:
 
 def _item_category(name: str) -> str:
     lowered = name.lower()
+    maker = _maker_from_item(name).lower()
+    if "복합기" in name:
+        return "복합기"
     if "프린터" in name:
         return "프린터"
+    if "모니터" in name:
+        return "모니터"
+    if "마이크" in name or maker in {"fifine", "브리츠"}:
+        return "마이크"
+    if "웹캠" in name:
+        return "웹캠"
+    if "스피커" in name:
+        return "스피커"
     if "office" in lowered or "오피스" in name:
         return "Office"
     if "가방" in name:
@@ -899,6 +984,8 @@ def _item_category(name: str) -> str:
         return "더미 플러그"
     if "케이블" in name:
         return "케이블"
+    if "허브" in name:
+        return "스위칭허브" if "스위칭" in name or "iptime" in lowered else "허브"
     if "마우스" in name and "키보드" in name:
         return "키보드 + 마우스"
     if "키보드" in name:
@@ -921,7 +1008,7 @@ def _approval_product_row(name: str, quantity: int, unit_price: int, amount: int
 
 
 def _short_product_name(name: str) -> str:
-    cleaned = re.sub(r"\[[^\]]+\]", "", name).strip()
+    cleaned = _product_text_without_maker(name)
     return cleaned.split(",", 1)[0].strip() or name
 
 
@@ -1363,7 +1450,7 @@ def _maker_from_item(name: str) -> str:
 
 
 def _model_from_item(name: str) -> str:
-    cleaned = re.sub(r"\[[^\]]+\]", "", name).strip()
+    cleaned = _product_text_without_maker(name)
     parts = [part.strip() for part in cleaned.split(",") if part.strip()]
     if "더미" in cleaned and "플러그" in cleaned and len(parts) >= 2:
         model_tokens = [
@@ -1384,7 +1471,25 @@ def _model_from_item(name: str) -> str:
         if model_code:
             return model_code.group(0)
         return _clean_model_text(cleaned.split("(", 1)[0].strip())
-    return cleaned or name
+    model_patterns = [
+        r"\b[A-Z]{1,5}-[A-Z0-9]+(?:-[A-Z0-9]+)*\b",
+        r"\b[A-Z]\d{3,6}[A-Z0-9]*(?:-[A-Z0-9]+)+\b",
+        r"\b[A-Z]{1,4}\d{2,6}[A-Z0-9]*\b",
+        r"\b[A-Z]{2,}[0-9]{2,}[A-Z0-9-]*\b",
+        r"\b[A-Z]{1}\d{3,5}\b",
+    ]
+    for pattern in model_patterns:
+        match = re.search(pattern, cleaned, re.IGNORECASE)
+        if match:
+            return match.group(0)
+    return cleaned.split("(", 1)[0].strip() or name
+
+
+def _product_text_without_maker(name: str) -> str:
+    text = re.sub(r"\[[^\]]+\]", "", name or "")
+    text = re.sub(r"\s*[:：]\s*컴퓨존\s*$", "", text)
+    text = re.sub(r"\s*[-–]\s*컴퓨존\s*$", "", text)
+    return _clean_model_text(text)
 
 
 def _clean_model_text(value: str) -> str:

@@ -31,6 +31,8 @@ from purchase_auto.groupware_approval import (
     _fallback_groupware_form_url,
     _groupware_text_pattern,
     _groupware_form_env_name,
+    _item_category,
+    _model_from_item,
     _normalize_groupware_label_text,
     _recipient_rows_for_job,
 )
@@ -369,6 +371,111 @@ def test_asset_approval_body_uses_notebook_template_for_mixed_assets() -> None:
     assert _approval_rule_for_job(job).startswith("21-4-3")
 
 
+def test_asset_product_rows_split_item_category_and_model_for_office_equipment() -> None:
+    assert _item_category("[EPSON] L14150 완성형 정품무한잉크 복합기 (잉크포함) : 컴퓨존") == "복합기"
+    assert _model_from_item("[EPSON] L14150 완성형 정품무한잉크 복합기 (잉크포함) : 컴퓨존") == "L14150"
+    assert _item_category("[삼성전자] SL-M2680N 흑백레이저복합기 (토너포함) : 컴퓨존") == "복합기"
+    assert _model_from_item("[삼성전자] SL-M2680N 흑백레이저복합기 (토너포함) : 컴퓨존") == "SL-M2680N"
+    assert _item_category("[FIFINE] K050 : 컴퓨존") == "마이크"
+    assert _model_from_item("[FIFINE] K050 : 컴퓨존") == "K050"
+    assert _item_category("[브리츠] 브리즈 고감도 구즈넥 콘덴서 마이크 BE-GM3 : 컴퓨존") == "마이크"
+    assert _model_from_item("[브리츠] 브리즈 고감도 구즈넥 콘덴서 마이크 BE-GM3 : 컴퓨존") == "BE-GM3"
+
+
+def test_asset_recipients_can_be_collected_per_product_line() -> None:
+    now = datetime.now(timezone.utc)
+    summary = "\n".join(
+        [
+            "[EPSON] L14150 완성형 정품무한잉크 복합기 (잉크포함) : 컴퓨존\t1\t561030\t561030",
+            "[삼성전자] SL-M2680N 흑백레이저복합기 (토너포함) : 컴퓨존\t1\t227700\t227700",
+            "[FIFINE] K050 : 컴퓨존\t1\t35100\t35100",
+            "[브리츠] 브리즈 고감도 구즈넥 콘덴서 마이크 BE-GM3 : 컴퓨존\t1\t20690\t20690",
+        ]
+    )
+    job = PurchaseJob(
+        job_id="job",
+        corp="일강",
+        corp_code="ilgang",
+        status=PurchaseStatus.QUOTE_SAVED,
+        items=[
+            PurchaseItem(
+                url="https://www.compuzone.co.kr/product/product_detail.htm?ProductNo=1",
+                quantity=1,
+                asset_department="전산팀",
+                asset_user="김기창",
+                asset_purpose="업무용",
+            ),
+            PurchaseItem(
+                url="https://www.compuzone.co.kr/product/product_detail.htm?ProductNo=2",
+                quantity=1,
+                asset_department="전산팀",
+                asset_user="안효일",
+                asset_purpose="업무용",
+            ),
+            PurchaseItem(
+                url="https://www.compuzone.co.kr/product/product_detail.htm?ProductNo=3",
+                quantity=1,
+                asset_department="총무팀",
+                asset_user="노양래",
+                asset_purpose="회의용",
+            ),
+            PurchaseItem(
+                url="https://www.compuzone.co.kr/product/product_detail.htm?ProductNo=4",
+                quantity=1,
+                asset_department="총무팀",
+                asset_user="금문정",
+                asset_purpose="회의용",
+            ),
+        ],
+        title="전산 집기비품 구매 건(D1공장)",
+        order_no="28185435",
+        amount=830860,
+        memo="D1공장",
+        item_summary=summary,
+        created_at=now,
+        updated_at=now,
+    )
+
+    assert _recipient_rows_for_job(job) == [
+        [1, "전산팀", "김기창", "업무용", "복합기 / L14150"],
+        [2, "전산팀", "안효일", "업무용", "복합기 / SL-M2680N"],
+        [3, "총무팀", "노양래", "회의용", "마이크 / K050"],
+        [4, "총무팀", "금문정", "회의용", "마이크 / BE-GM3"],
+    ]
+    body = _approval_body_html(job)
+    assert "L14150 완성형 정품무한잉크 복합기" not in body
+    assert "SL-M2680N 흑백레이저복합기" not in body
+    assert "K050 : 컴퓨존" not in body
+    assert "BE-GM3 : 컴퓨존" not in body
+    assert "복합기" in body
+    assert "마이크" in body
+    assert "L14150" in body
+    assert "SL-M2680N" in body
+    assert "K050" in body
+    assert "BE-GM3" in body
+
+
+def test_asset_approval_requires_recipient_input_for_asset_lines() -> None:
+    now = datetime.now(timezone.utc)
+    job = PurchaseJob(
+        job_id="job",
+        corp="일강",
+        corp_code="ilgang",
+        status=PurchaseStatus.QUOTE_SAVED,
+        items=[PurchaseItem(url="https://www.compuzone.co.kr/product/product_detail.htm?ProductNo=1", quantity=1)],
+        title="전산 집기비품 구매 건(D1공장)",
+        order_no="28185435",
+        amount=561030,
+        memo="D1공장",
+        item_summary="[EPSON] L14150 완성형 정품무한잉크 복합기 (잉크포함)\t1\t561030\t561030",
+        created_at=now,
+        updated_at=now,
+    )
+
+    with pytest.raises(RuntimeError, match="지급대상 정보가 부족"):
+        _approval_body_html(job)
+
+
 def test_groupware_body_rejects_product_code_rows_and_keeps_p4_factory() -> None:
     now = datetime.now(timezone.utc)
     summary = "\n".join(
@@ -386,9 +493,27 @@ def test_groupware_body_rejects_product_code_rows_and_keeps_p4_factory() -> None
         corp_code="daeseung_precision",
         status=PurchaseStatus.QUOTE_SAVED,
         items=[
-            PurchaseItem(url="https://www.compuzone.co.kr/product/product_detail.htm?ProductNo=1303277", quantity=1),
-            PurchaseItem(url="https://www.compuzone.co.kr/product/product_detail.htm?ProductNo=1195294", quantity=2),
-            PurchaseItem(url="https://www.compuzone.co.kr/product/product_detail.htm?ProductNo=1301049", quantity=1),
+            PurchaseItem(
+                url="https://www.compuzone.co.kr/product/product_detail.htm?ProductNo=1303277",
+                quantity=1,
+                asset_department="전산팀",
+                asset_user="김기창",
+                asset_purpose="업무용",
+            ),
+            PurchaseItem(
+                url="https://www.compuzone.co.kr/product/product_detail.htm?ProductNo=1195294",
+                quantity=2,
+                asset_department="전산팀",
+                asset_user="김기창",
+                asset_purpose="업무용",
+            ),
+            PurchaseItem(
+                url="https://www.compuzone.co.kr/product/product_detail.htm?ProductNo=1301049",
+                quantity=1,
+                asset_department="전산팀",
+                asset_user="김기창",
+                asset_purpose="업무용",
+            ),
         ],
         title="\uc804\uc0b0 \uc9d1\uae30\ube44\ud488 \uad6c\ub9e4 \uac74(P4\uacf5\uc7a5)",
         order_no="28179522",

@@ -782,6 +782,7 @@ def _clean_summary_name(value: str) -> str:
     text = re.sub(r"\s+", " ", value or "").strip()
     text = re.sub(r"^\s*컴퓨존\s*[-–]\s*", "", text)
     text = re.sub(r"\s*[-–]\s*컴퓨존\s*$", "", text)
+    text = re.sub(r"\s*[:：]\s*컴퓨존\s*$", "", text)
     return text.strip()
 
 

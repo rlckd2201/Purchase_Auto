@@ -4,7 +4,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 
 class PurchaseStatus(str, Enum):
@@ -20,8 +20,26 @@ class PurchaseStatus(str, Enum):
 
 
 class PurchaseItem(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
     url: str
     quantity: int = Field(ge=1)
+    asset_department: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("asset_department", "asset_dept", "department", "dept", "부서", "지급부서"),
+    )
+    asset_user: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("asset_user", "asset_target", "recipient", "target", "user", "사용자", "대상", "지급대상"),
+    )
+    asset_purpose: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("asset_purpose", "purpose", "용도"),
+    )
+    asset_note: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("asset_note", "note", "비고"),
+    )
 
     @field_validator("url")
     @classmethod
@@ -30,6 +48,14 @@ class PurchaseItem(BaseModel):
         if not text.startswith(("http://", "https://")):
             raise ValueError("상품 URL은 http:// 또는 https:// 로 시작해야 합니다.")
         return text
+
+    @field_validator("asset_department", "asset_user", "asset_purpose", "asset_note", mode="before")
+    @classmethod
+    def normalize_optional_text(cls, value):
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
 
 
 class CreatePurchaseJobRequest(BaseModel):
