@@ -101,9 +101,8 @@ def _live_submit(job: PurchaseJob, settings: Settings) -> ApprovalResult:
     from playwright.sync_api import sync_playwright
 
     corp = CORPS[job.corp_code]
-    form_url = settings.groupware_form_urls.get(job.corp_code, "")
-    if not form_url:
-        raise RuntimeError(f"{corp.display_name} 그룹웨어 양식 URL이 설정되지 않았습니다.")
+    configured_form_url = settings.groupware_form_urls.get(job.corp_code, "").strip()
+    form_url = configured_form_url or _fallback_groupware_form_url(settings)
     if not job.quote_pdf_path or not Path(job.quote_pdf_path).exists():
         raise RuntimeError("견적서 PDF가 없어 품의를 상신할 수 없습니다.")
 
@@ -128,6 +127,8 @@ def _live_submit(job: PurchaseJob, settings: Settings) -> ApprovalResult:
         try:
             page.goto(form_url, wait_until="domcontentloaded", timeout=60000)
             _ensure_groupware_session(page, settings, form_url)
+            if not configured_form_url:
+                _open_groupware_form_by_label(page, corp)
             body_html = _approval_body_html(job)
             _set_delegate_level(page, _delegate_level_for_job(job))
             _fill_approval_rule(page, _approval_rule_for_job(job))
@@ -156,6 +157,84 @@ def _live_submit(job: PurchaseJob, settings: Settings) -> ApprovalResult:
         finally:
             if close_context:
                 context.close()
+
+
+def _fallback_groupware_form_url(settings: Settings) -> str:
+    return f"{settings.groupware_base_url.rstrip('/')}/app/approval/document/new"
+
+
+def _groupware_form_env_name(corp_code: str) -> str:
+    return {
+        "daeseung": "PURCHASE_AUTO_GROUPWARE_FORM_URL_DAESEUNG",
+        "daeseung_precision": "PURCHASE_AUTO_GROUPWARE_FORM_URL_DAESEUNG_PRECISION",
+        "ilgang": "PURCHASE_AUTO_GROUPWARE_FORM_URL_ILGANG",
+    }.get(corp_code, f"PURCHASE_AUTO_GROUPWARE_FORM_URL_{corp_code.upper()}")
+
+
+def _is_groupware_form_url(url: str) -> bool:
+    return bool(re.search(r"/app/approval/document/new/[^/?#]+/[^/?#]+", url or ""))
+
+
+def _open_groupware_form_by_label(page, corp: CorpConfig) -> None:
+    if _is_groupware_form_url(page.url):
+        return
+
+    form_label = corp.approval_form_label
+    try:
+        page.wait_for_load_state("networkidle", timeout=10000)
+    except Exception:
+        pass
+
+    click_errors: list[str] = []
+    locator_specs = [
+        ("exact text", lambda: page.get_by_text(form_label, exact=True)),
+        ("contains text", lambda: page.locator("a, button, [role='button'], td, div, span").filter(has_text=form_label)),
+    ]
+    for label, factory in locator_specs:
+        try:
+            locator = factory()
+            count = min(locator.count(), 20)
+        except Exception as exc:
+            click_errors.append(f"{label}: {exc}")
+            continue
+
+        for index in range(count):
+            element = locator.nth(index)
+            try:
+                if not element.is_visible(timeout=1000):
+                    continue
+                target = element.locator("xpath=ancestor-or-self::*[self::a or self::button or @role='button'][1]")
+                if target.count() == 0:
+                    target = element
+                target.first.click(timeout=5000)
+                try:
+                    page.wait_for_url(re.compile(r".*/app/approval/document/new/[^/?#]+/[^/?#]+.*"), timeout=15000)
+                    return
+                except Exception:
+                    if _is_groupware_form_url(page.url):
+                        return
+                    continue
+            except Exception as exc:
+                click_errors.append(f"{label}[{index}]: {exc}")
+
+    body_excerpt = ""
+    try:
+        body_excerpt = page.locator("body").inner_text(timeout=3000)
+        body_excerpt = re.sub(r"\s+", " ", body_excerpt).strip()[:500]
+    except Exception:
+        pass
+
+    detail = f" current_url={page.url}"
+    if body_excerpt:
+        detail += f" body_excerpt={body_excerpt}"
+    if click_errors:
+        detail += f" click_errors={click_errors[:3]}"
+    env_name = _groupware_form_env_name(corp.code)
+    raise RuntimeError(
+        f"{corp.display_name} 그룹웨어 양식 URL이 비어 있고, 기본 작성 화면에서도 "
+        f"'{form_label}' 양식을 찾지 못했습니다. "
+        f"대상 양식을 한 번 열어 {env_name} 값을 설정하세요. {detail}"
+    )
 
 
 def _save_debug_screenshot(page, job: PurchaseJob, settings: Settings, stem: str) -> None:

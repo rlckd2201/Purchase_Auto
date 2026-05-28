@@ -28,6 +28,8 @@ from purchase_auto.groupware_approval import (
     _approval_rule_for_job,
     _approval_title,
     _delegate_level_for_job,
+    _fallback_groupware_form_url,
+    _groupware_form_env_name,
     _recipient_rows_for_job,
 )
 from purchase_auto.models import CreatePurchaseJobRequest, PurchaseJob, PurchaseItem, PurchaseStatus, RunCompuzoneOrderRequest
@@ -86,6 +88,17 @@ def _request() -> CreatePurchaseJobRequest:
         memo="드라이런",
         items=[{"url": "https://www.compuzone.co.kr/product/product_detail.htm?ProductNo=123456", "quantity": 2}],
     )
+
+
+def test_groupware_missing_ilgang_url_falls_back_to_document_new(tmp_path: Path) -> None:
+    settings = _settings(tmp_path)
+
+    assert _fallback_groupware_form_url(settings) == "https://gw.dae-seung.co.kr/app/approval/document/new"
+
+
+def test_groupware_form_env_name_handles_known_corps() -> None:
+    assert _groupware_form_env_name("ilgang") == "PURCHASE_AUTO_GROUPWARE_FORM_URL_ILGANG"
+    assert _groupware_form_env_name("daeseung_precision") == "PURCHASE_AUTO_GROUPWARE_FORM_URL_DAESEUNG_PRECISION"
 
 
 def test_dry_run_blocks_live_steps(tmp_path: Path) -> None:
