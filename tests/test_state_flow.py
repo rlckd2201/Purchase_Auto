@@ -455,6 +455,27 @@ def test_dialog_blocked_order_raises_sold_out_product() -> None:
     assert exc.value.product_no == "1087083"
 
 
+def test_cart_confirmation_matches_product_number_in_cart_dom() -> None:
+    class FakeBodyLocator:
+        def inner_text(self, timeout: int = 3000) -> str:
+            return "cart delivery products 1 name option quantity order"
+
+    class FakePage:
+        url = "https://www.compuzone.co.kr/bsk/basket_main.htm"
+
+        def locator(self, selector: str):
+            assert selector == "body"
+            return FakeBodyLocator()
+
+        def evaluate(self, script: str):
+            return [
+                "https://www.compuzone.co.kr/product/product_detail.htm?ProductNo=758974",
+                "basket_insert_detail2",
+            ]
+
+    assert compuzone_order._cart_page_contains_products(FakePage(), 1, [["758974", "long product title"]])
+
+
 def test_compuzone_cart_add_does_not_use_direct_buy_button() -> None:
     source = inspect.getsource(_click_add_to_cart)
     lines = {line.strip() for line in source.splitlines()}

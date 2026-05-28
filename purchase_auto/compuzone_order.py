@@ -388,6 +388,8 @@ def _open_cart_order_page(
         _raise_if_login_required(page)
         _progress(log, f"컴퓨존 상품 {index}/{total_items} 페이지 진입 완료 ({_elapsed(item_started)})")
         product_markers = _product_markers_from_page(page)
+        if product_no and product_no not in product_markers:
+            product_markers.insert(0, product_no)
         _raise_if_product_unavailable(page, item)
         _set_quantity(page, item.quantity)
         product_line = _product_line_from_detail_page(page, item)
@@ -1191,14 +1193,18 @@ def _cart_page_contains_products(
         body = page.locator("body").inner_text(timeout=3000)
     except Exception:
         body = ""
-    normalized_body = _normalize_text(body)
+    cart_signature = _cart_page_signature(page, body)
     visible_count = _cart_visible_product_count(body)
     if visible_count is not None and visible_count < expected_count:
         return False
-    if expected_marker_groups and not _cart_contains_marker_groups(normalized_body, expected_marker_groups):
+    marker_groups_match = _cart_contains_marker_groups(cart_signature, expected_marker_groups)
+    is_cart_context = _cart_page_looks_like_cart(page)
+    if expected_marker_groups and not marker_groups_match:
         return False
     if visible_count is not None:
         return visible_count >= expected_count
+    if expected_marker_groups and marker_groups_match and is_cart_context:
+        return True
     return _cart_has_any_item(page)
 
 
@@ -1210,7 +1216,7 @@ def _assert_cart_ready_for_order(page, expected_count: int, expected_marker_grou
     visible_count = _cart_visible_product_count(body)
     if visible_count is not None and visible_count < expected_count:
         raise RuntimeError(f"장바구니 품목 수가 맞지 않습니다. 요청 {expected_count}건, 장바구니 {visible_count}건")
-    if not _cart_contains_marker_groups(_normalize_text(body), expected_marker_groups):
+    if not _cart_contains_marker_groups(_cart_page_signature(page, body), expected_marker_groups):
         raise RuntimeError("장바구니에 요청한 상품이 모두 담겼는지 확인하지 못했습니다.")
 
 
@@ -1222,6 +1228,44 @@ def _cart_contains_marker_groups(normalized_body: str, expected_marker_groups: l
         any(_normalize_text(marker) in normalized_body for marker in marker_group)
         for marker_group in non_empty_groups
     )
+
+
+def _cart_page_looks_like_cart(page) -> bool:
+    page_url = str(getattr(page, "url", "") or "").lower()
+    return "basket" in page_url or "/bsk/" in page_url
+
+
+def _cart_page_signature(page, body: str = "") -> str:
+    values = [body or ""]
+    try:
+        extra_values = page.evaluate(
+            """
+            () => {
+              const values = [
+                window.location.href,
+                document.body ? document.body.innerText || '' : '',
+                document.body ? document.body.textContent || '' : ''
+              ];
+              for (const element of document.querySelectorAll('a[href], img[src], [onclick], input[value], button[value]')) {
+                values.push(
+                  element.getAttribute('href') || '',
+                  element.getAttribute('src') || '',
+                  element.getAttribute('onclick') || '',
+                  element.getAttribute('value') || '',
+                  element.getAttribute('title') || '',
+                  element.getAttribute('alt') || '',
+                  element.textContent || ''
+                );
+              }
+              return values;
+            }
+            """
+        )
+    except Exception:
+        extra_values = []
+    if isinstance(extra_values, list):
+        values.extend(str(value) for value in extra_values if value)
+    return _normalize_text(" ".join(values))
 
 
 def _cart_visible_product_count(body: str) -> int | None:
