@@ -332,6 +332,37 @@ def _format_browser_diagnostics(events: dict[str, list[str]] | None) -> str:
     return " ".join(parts)
 
 
+def _cart_click_diagnostic_summary(cart_click: dict[str, object] | None) -> str:
+    if not cart_click:
+        return ""
+
+    parts: list[str] = []
+    method = str(cart_click.get("method") or "").strip()
+    if method:
+        parts.append(f"클릭방식={method}")
+
+    element = cart_click.get("element")
+    if isinstance(element, dict):
+        onclick = str(element.get("onclick") or "")
+        class_name = str(element.get("className") or "")
+        if "basket_insert" in onclick or "cart" in class_name:
+            parts.append("장바구니버튼=감지")
+
+    iframe = cart_click.get("iframe")
+    if isinstance(iframe, dict):
+        src = str(iframe.get("src") or "")
+        ready_state = str(iframe.get("readyState") or "")
+        if "basket_insert" in src:
+            parts.append("장바구니요청=전송")
+        if ready_state == "complete":
+            parts.append("iframe=완료")
+
+    if not parts:
+        return ""
+    unique_parts = list(dict.fromkeys(parts))
+    return f" 진단={', '.join(unique_parts)}"
+
+
 def _save_debug_screenshot(page, job: PurchaseJob, settings: Settings, stem: str) -> None:
     try:
         debug_dir = _job_artifact_dir(job, settings)
@@ -1153,13 +1184,12 @@ def _confirm_cart_add(
     dialog_detail = _dialog_excerpt(dialog_messages, dialog_start)
     if dialog_detail:
         dialog_detail = f" 컴퓨존알림={dialog_detail}"
-    click_detail = f" 클릭정보={cart_click}" if cart_click else ""
-    browser_detail = _format_browser_diagnostics(browser_diagnostics)
-    if browser_detail:
-        browser_detail = f" browser_diag={browser_detail}"
+    click_detail = _cart_click_diagnostic_summary(cart_click)
+    screen_summary = _page_text_excerpt(page, max_chars=180)
+    screen_detail = f" 화면요약={screen_summary}" if screen_summary else ""
     raise RuntimeError(
-        f"상품이 장바구니에 담기지 않았습니다:{detail} {item.url} "
-        f"현재페이지={page.url}{dialog_detail}{click_detail}{browser_detail} 화면요약={_page_text_excerpt(page)}"
+        f"상품이 장바구니에 담겼는지 확인하지 못했습니다:{detail} "
+        f"상품페이지={item.url} 현재페이지={page.url}{dialog_detail}{click_detail}{screen_detail}"
     )
 
 

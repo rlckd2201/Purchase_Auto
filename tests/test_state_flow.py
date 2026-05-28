@@ -516,7 +516,30 @@ def test_compuzone_cart_add_waits_for_hidden_iframe_result() -> None:
 
     assert "common_iframe" in source
     assert "_wait_for_cart_insert_iframe" in source
-    assert "browser_diag=" in source
+    assert "_cart_click_diagnostic_summary" in source
+    assert "browser_diag=" not in inspect.getsource(compuzone_order._confirm_cart_add)
+
+
+def test_compuzone_cart_click_summary_omits_raw_browser_noise() -> None:
+    summary = compuzone_order._cart_click_diagnostic_summary(
+        {
+            "method": "selector",
+            "selector": ".total_price .btn_area a.cart[onclick*='basket_insert_detail']",
+            "element": {
+                "className": "cart",
+                "onclick": "buy_direct('758974','일반',1,0,'basket_insert_detail2','0',event);",
+            },
+            "iframe": {
+                "src": "../order/order_function.php?actype=basket_insert_detail2&cProductNo=758974",
+                "readyState": "complete",
+            },
+        }
+    )
+
+    assert "장바구니버튼=감지" in summary
+    assert "장바구니요청=전송" in summary
+    assert "basket_insert_detail2" not in summary
+    assert "758974" not in summary
 
 
 def test_step_guard_rejects_concurrent_same_key() -> None:
