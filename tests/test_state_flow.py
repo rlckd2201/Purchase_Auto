@@ -39,7 +39,7 @@ from purchase_auto.groupware_approval import (
     _normalize_groupware_label_text,
     _recipient_rows_for_job,
 )
-from purchase_auto.models import CreatePurchaseJobRequest, PurchaseJob, PurchaseItem, PurchaseStatus, RunCompuzoneOrderRequest
+from purchase_auto.models import CreatePurchaseJobRequest, PurchaseAssetRecipient, PurchaseJob, PurchaseItem, PurchaseStatus, RunCompuzoneOrderRequest
 from purchase_auto.services import (
     PurchaseStepBusyError,
     _step_guard,
@@ -489,6 +489,69 @@ def test_asset_approval_requires_recipient_input_for_asset_lines() -> None:
     )
 
     with pytest.raises(RuntimeError, match="지급대상 정보가 부족"):
+        _approval_body_html(job)
+
+
+def test_asset_recipients_are_collected_per_quantity_unit() -> None:
+    now = datetime.now(timezone.utc)
+    job = PurchaseJob(
+        job_id="job",
+        corp="대승정밀",
+        corp_code="daeseung_precision",
+        status=PurchaseStatus.QUOTE_SAVED,
+        items=[
+            PurchaseItem(
+                url="https://www.compuzone.co.kr/product/product_detail.htm?ProductNo=1",
+                quantity=4,
+                asset_recipients=[
+                    PurchaseAssetRecipient(department="전산팀", user="김기창", purpose="업무용"),
+                    PurchaseAssetRecipient(department="품질팀", user="홍길동", purpose="검사PC"),
+                    PurchaseAssetRecipient(department="생산팀", user="이영희", purpose="현장용"),
+                    PurchaseAssetRecipient(department="관리팀", user="박철수", purpose="회의용"),
+                ],
+            )
+        ],
+        title="전산 집기비품 구매 건(P3공장)",
+        order_no="28185435",
+        amount=435624,
+        memo="P3공장",
+        item_summary="[LG전자] 27FD100SB 모니터 : 컴퓨존\t4\t108906\t435624",
+        created_at=now,
+        updated_at=now,
+    )
+
+    assert _recipient_rows_for_job(job) == [
+        [1, "전산팀", "김기창", "업무용", "모니터 / 27FD100SB #1"],
+        [2, "품질팀", "홍길동", "검사PC", "모니터 / 27FD100SB #2"],
+        [3, "생산팀", "이영희", "현장용", "모니터 / 27FD100SB #3"],
+        [4, "관리팀", "박철수", "회의용", "모니터 / 27FD100SB #4"],
+    ]
+
+
+def test_asset_recipient_list_must_cover_each_quantity_unit() -> None:
+    now = datetime.now(timezone.utc)
+    job = PurchaseJob(
+        job_id="job",
+        corp="대승정밀",
+        corp_code="daeseung_precision",
+        status=PurchaseStatus.QUOTE_SAVED,
+        items=[
+            PurchaseItem(
+                url="https://www.compuzone.co.kr/product/product_detail.htm?ProductNo=1",
+                quantity=2,
+                asset_recipients=[PurchaseAssetRecipient(department="전산팀", user="김기창", purpose="업무용")],
+            )
+        ],
+        title="전산 집기비품 구매 건(P3공장)",
+        order_no="28185435",
+        amount=217812,
+        memo="P3공장",
+        item_summary="[LG전자] 27FD100SB 모니터 : 컴퓨존\t2\t108906\t217812",
+        created_at=now,
+        updated_at=now,
+    )
+
+    with pytest.raises(RuntimeError, match="모니터 / 27FD100SB #2"):
         _approval_body_html(job)
 
 

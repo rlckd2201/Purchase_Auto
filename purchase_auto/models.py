@@ -19,6 +19,35 @@ class PurchaseStatus(str, Enum):
     FAILED = "failed"
 
 
+class PurchaseAssetRecipient(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    department: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("asset_department", "asset_dept", "department", "dept", "부서", "지급부서"),
+    )
+    user: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("asset_user", "asset_target", "recipient", "target", "user", "사용자", "대상", "지급대상"),
+    )
+    purpose: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("asset_purpose", "purpose", "용도"),
+    )
+    note: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("asset_note", "note", "비고"),
+    )
+
+    @field_validator("department", "user", "purpose", "note", mode="before")
+    @classmethod
+    def normalize_optional_text(cls, value):
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+
 class PurchaseItem(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
@@ -39,6 +68,10 @@ class PurchaseItem(BaseModel):
     asset_note: str | None = Field(
         default=None,
         validation_alias=AliasChoices("asset_note", "note", "비고"),
+    )
+    asset_recipients: list[PurchaseAssetRecipient] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("asset_recipients", "assetRecipients", "recipients", "지급대상목록"),
     )
 
     @field_validator("url")

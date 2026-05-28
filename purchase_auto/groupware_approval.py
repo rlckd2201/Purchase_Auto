@@ -946,6 +946,20 @@ def _recipient_rows_for_job(job: PurchaseJob) -> list[list[object]]:
         if _item_document_category(line.name) == RECIPIENT_EXEMPT_DOCUMENT_CATEGORY:
             continue
         item = job.items[line.item_index] if 0 <= line.item_index < len(job.items) else None
+        item_recipients = _asset_recipients_for_item(item)
+        if item_recipients:
+            for unit_index in range(line.quantity):
+                row = item_recipients[unit_index] if unit_index < len(item_recipients) else {}
+                dept = row.get("department") or global_dept
+                target = row.get("user") or global_target
+                purpose = row.get("purpose") or global_purpose
+                if not dept or not target or not purpose:
+                    missing.append(_recipient_line_note(line, unit_index, line.quantity))
+                    continue
+                note = row.get("note") or global_note or _recipient_line_note(line, unit_index, line.quantity)
+                for target_name in _split_recipient_targets(target):
+                    rows.append([len(rows) + 1, dept, target_name, purpose, note])
+            continue
         dept = (getattr(item, "asset_department", None) if item else None) or global_dept
         target = (getattr(item, "asset_user", None) if item else None) or global_target
         purpose = (getattr(item, "asset_purpose", None) if item else None) or global_purpose
@@ -978,7 +992,25 @@ def _item_has_asset_recipient_info(item) -> bool:
         or getattr(item, "asset_user", None)
         or getattr(item, "asset_purpose", None)
         or getattr(item, "asset_note", None)
+        or getattr(item, "asset_recipients", None)
     )
+
+
+def _asset_recipients_for_item(item) -> list[dict[str, str]]:
+    entries = getattr(item, "asset_recipients", None) if item else None
+    if not entries:
+        return []
+    rows: list[dict[str, str]] = []
+    for entry in entries:
+        rows.append(
+            {
+                "department": (getattr(entry, "department", None) or "").strip(),
+                "user": (getattr(entry, "user", None) or "").strip(),
+                "purpose": (getattr(entry, "purpose", None) or "").strip(),
+                "note": (getattr(entry, "note", None) or "").strip(),
+            }
+        )
+    return rows
 
 
 def _split_recipient_targets(target: str) -> list[str]:
@@ -999,13 +1031,14 @@ def _recipient_item_labels(job: PurchaseJob) -> list[str]:
     return [label for _, label in labels]
 
 
-def _recipient_line_note(line: ApprovalProductLine) -> str:
+def _recipient_line_note(line: ApprovalProductLine, unit_index: int | None = None, quantity: int | None = None) -> str:
     label_pair = _recipient_item_label(line.name)
     label = label_pair[1] if label_pair else _item_category(line.name)
     model = _model_from_item(line.name)
-    if model and _compact_compare_text(model) != _compact_compare_text(label):
-        return f"{label} / {model}"
-    return label
+    note = f"{label} / {model}" if model and _compact_compare_text(model) != _compact_compare_text(label) else label
+    if quantity and quantity > 1 and unit_index is not None:
+        return f"{note} #{unit_index + 1}"
+    return note
 
 
 def _compact_compare_text(value: str) -> str:
@@ -1579,6 +1612,7 @@ def _model_from_item(name: str) -> str:
             return model_code.group(0)
         return _clean_model_text(cleaned.split("(", 1)[0].strip())
     model_patterns = [
+        r"\b\d{2,3}[A-Z]{2,}\d*[A-Z0-9-]*\b",
         r"\b[A-Z]{1,5}-[A-Z0-9]+(?:-[A-Z0-9]+)*\b",
         r"\b[A-Z]\d{3,6}[A-Z0-9]*(?:-[A-Z0-9]+)+\b",
         r"\b[A-Z]{1,4}\d{2,6}[A-Z0-9]*\b",
