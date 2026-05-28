@@ -29,6 +29,9 @@
 - 장바구니 구매 설정 화면에 집기비품/소프트웨어 품목별 지급대상 입력 영역을 추가했다.
 - 각 대상 품목마다 부서, 사용자, 용도를 필수로 입력하게 했다.
 - WMS 브릿지가 Purchase_Auto `POST /api/purchase-jobs` payload의 각 item에 지급 정보를 전달한다.
+- 일강 사업장 선택 시 품의 제목/본문의 공장명이 `D1공장`으로 fallback 되지 않도록 사업자번호 기준 공장 라벨을 추가했다.
+  - `125-81-51622` -> `일강1공장`
+  - `403-85-20895` -> `일강2공장`
 
 ## 검증
 
@@ -44,4 +47,3 @@ npm.cmd run build
 - Purchase_Auto py_compile: passed
 - WMS backend route syntax check: passed
 - WMS frontend build: passed with existing unrelated eslint warnings
-

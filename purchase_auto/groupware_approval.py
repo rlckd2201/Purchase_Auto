@@ -43,8 +43,11 @@ FACTORY_BY_BUSINESS_NUMBER = {
     "403-85-15640": "P2공장",
     "844-85-00770": "P3공장",
     "118-85-07029": "P4공장",
+    "125-81-51622": "일강1공장",
+    "403-85-20895": "일강2공장",
 }
 _FACTORY_RE = re.compile(r"\b([DP])\s*([1-4])\s*공장\b", re.IGNORECASE)
+_ILGANG_FACTORY_RE = re.compile(r"일강\s*([12])\s*공장")
 _BUSINESS_NUMBER_RE = re.compile(r"\b(\d{3})-?(\d{2})-?(\d{5})\b")
 _GROUPWARE_FORM_URL_RE = re.compile(r".*/app/approval/document/new/[^/?#]+/[^/?#]+.*")
 _GROUPWARE_DASHES = "-–—−"
@@ -58,9 +61,12 @@ _PRODUCT_CODE_LINE_RE = re.compile(
 
 def _factory_label_from_text(value: str) -> str:
     match = _FACTORY_RE.search(value or "")
-    if not match:
-        return ""
-    return f"{match.group(1).upper()}{match.group(2)}공장"
+    if match:
+        return f"{match.group(1).upper()}{match.group(2)}공장"
+    match = _ILGANG_FACTORY_RE.search(value or "")
+    if match:
+        return f"일강{match.group(1)}공장"
+    return ""
 
 
 def _business_number_from_text(value: str) -> str:
@@ -578,6 +584,8 @@ def _factory_label(job: PurchaseJob) -> str:
         business_number = _business_number_from_text(text)
         if business_number and business_number in FACTORY_BY_BUSINESS_NUMBER:
             return FACTORY_BY_BUSINESS_NUMBER[business_number]
+    if job.corp_code == "ilgang":
+        return "일강1공장"
     if job.corp_code == "daeseung_precision":
         return "P3공장"
     return "D1공장"

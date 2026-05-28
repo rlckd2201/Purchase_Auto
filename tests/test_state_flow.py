@@ -28,6 +28,7 @@ from purchase_auto.groupware_approval import (
     _approval_rule_for_job,
     _approval_title,
     _delegate_level_for_job,
+    _factory_label,
     _fallback_groupware_form_url,
     _groupware_text_pattern,
     _groupware_form_env_name,
@@ -474,6 +475,37 @@ def test_asset_approval_requires_recipient_input_for_asset_lines() -> None:
 
     with pytest.raises(RuntimeError, match="지급대상 정보가 부족"):
         _approval_body_html(job)
+
+
+def test_groupware_factory_label_uses_ilgang_business_number() -> None:
+    now = datetime.now(timezone.utc)
+    job = PurchaseJob(
+        job_id="job",
+        corp="일강",
+        corp_code="ilgang",
+        status=PurchaseStatus.QUOTE_SAVED,
+        items=[
+            PurchaseItem(
+                url="https://www.compuzone.co.kr/product/product_detail.htm?ProductNo=1",
+                quantity=1,
+                asset_department="전산팀",
+                asset_user="김기창",
+                asset_purpose="업무용",
+            )
+        ],
+        title="전산 집기비품 구매 건",
+        order_no="28185435",
+        amount=561030,
+        memo="사업자번호=125-81-51622",
+        item_summary="[EPSON] L14150 완성형 정품무한잉크 복합기 (잉크포함)\t1\t561030\t561030",
+        created_at=now,
+        updated_at=now,
+    )
+
+    assert _factory_label(job) == "일강1공장"
+    body = _approval_body_html(job)
+    assert "일강1공장" in body
+    assert "D1공장" not in body
 
 
 def test_groupware_body_rejects_product_code_rows_and_keeps_p4_factory() -> None:
