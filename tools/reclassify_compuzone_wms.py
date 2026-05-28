@@ -36,8 +36,21 @@ BACKUP_TABLES = (
     "item_codes",
 )
 
-EXCLUDE_STOCK_ITEMS = {"조립/설치서비스"}
-NON_STOCK_ITEMS = {"오피스", "운영체제"}
+EXCLUDE_STOCK_ITEMS: set[str] = set()
+SOFTWARE_ASSET_ITEMS = {"오피스", "운영체제"}
+EXPENSE_ITEMS = {
+    "소프트웨어이용료",
+    "유지보수료",
+    "클라우드서비스",
+    "호스팅",
+    "보안관제",
+    "그룹웨어이용료",
+    "조립/설치서비스",
+}
+SOFTWARE_ASSET_PATH = "전산 > 컴퓨터소프트웨어"
+EXPENSE_BASE_PATH = "전산 > 비용"
+FIXTURE_BASE_PATH = "전산 > 집기비품"
+CONSUMABLE_BASE_PATH = "전산 > 소모품"
 
 
 @dataclass(frozen=True)
@@ -197,6 +210,24 @@ def apply_corrections(raw: str, normalized: dict[str, Any]) -> dict[str, Any]:
     item_name = normalize_space(str(entry.get("item_name") or "기타"))
     model_name = normalize_space(str(entry.get("model_name") or ""))
 
+    if "microsoft 365" in text or "creative cloud" in text or "saas" in text or "구독" in text:
+        entry["item_name"] = "소프트웨어이용료"
+
+    if "유지보수" in text or "업데이트 비용" in text or "기술지원" in text:
+        entry["item_name"] = "유지보수료"
+
+    if "클라우드" in text or "cloud" in text:
+        entry["item_name"] = "클라우드서비스"
+
+    if "호스팅" in text or "hosting" in text:
+        entry["item_name"] = "호스팅"
+
+    if "보안관제" in text:
+        entry["item_name"] = "보안관제"
+
+    if "그룹웨어 이용료" in text:
+        entry["item_name"] = "그룹웨어이용료"
+
     if "tv 거치대" in text or "tv스탠드" in text or "티비거치대" in text:
         entry["item_name"] = "TV거치대"
 
@@ -277,12 +308,12 @@ def monitor_inch(raw: str) -> str:
 def network_switch_path(raw: str) -> str:
     text = raw.lower()
     if "48" in text:
-        return "전산 > 소모품 > 네트워크 > 스위치 허브 > 48포트 SFP" if "sfp" in text else "전산 > 소모품 > 네트워크 > 스위치 허브 > 48포트"
+        return f"{FIXTURE_BASE_PATH} > 네트워크장비 > 스위치 허브 > 48포트 SFP" if "sfp" in text else f"{FIXTURE_BASE_PATH} > 네트워크장비 > 스위치 허브 > 48포트"
     if "24" in text:
-        return "전산 > 소모품 > 네트워크 > 스위치 허브 > 스위치 허브 24포트"
+        return f"{FIXTURE_BASE_PATH} > 네트워크장비 > 스위치 허브 > 24포트"
     if "8포트" in text or "h8008" in text:
-        return "전산 > 소모품 > 네트워크 > 스위치 허브 > 8포트"
-    return "전산 > 소모품 > 네트워크 > 스위치 허브"
+        return f"{FIXTURE_BASE_PATH} > 네트워크장비 > 스위치 허브 > 8포트"
+    return f"{FIXTURE_BASE_PATH} > 네트워크장비 > 스위치 허브"
 
 
 def usb_hub_path(raw: str) -> str:
@@ -327,49 +358,53 @@ def suggest_category(item_name: str, model_name: str, raw: str) -> CategorySugge
     text = f" {normalize_space(raw).lower()} "
     if item_name in EXCLUDE_STOCK_ITEMS:
         return CategorySuggestion(None, "exclude", "ignored", 1.0, "창고 재고가 아닌 서비스 항목")
-    if item_name in NON_STOCK_ITEMS:
-        return CategorySuggestion("전산 > 집기 > 소프트웨어", "non_stock", "non_stock", 0.95, "소프트웨어/라이선스 비재고 항목")
+    if item_name in EXPENSE_ITEMS:
+        return CategorySuggestion(f"{EXPENSE_BASE_PATH} > {item_name}", "expense", "expense", 0.95, "비용성 서비스/구독 항목")
+    if item_name in SOFTWARE_ASSET_ITEMS:
+        return CategorySuggestion(SOFTWARE_ASSET_PATH, "non_stock", "non_stock", 0.95, "컴퓨터소프트웨어 무형자산 항목")
 
     if item_name == "사무용 PC":
-        return CategorySuggestion("전산 > 집기 > 컴퓨터 > PC > 일반용", "stock", "new_candidate", 0.95, "전용 그래픽카드 없음")
+        return CategorySuggestion(f"{FIXTURE_BASE_PATH} > 컴퓨터 > PC > 일반용", "stock", "new_candidate", 0.95, "전용 그래픽카드 없음")
     if item_name == "CAD PC":
-        return CategorySuggestion("전산 > 집기 > 컴퓨터 > PC > 캐드용", "stock", "new_candidate", 0.95, "전용 그래픽카드 감지")
+        return CategorySuggestion(f"{FIXTURE_BASE_PATH} > 컴퓨터 > PC > 캐드용", "stock", "new_candidate", 0.95, "전용 그래픽카드 감지")
     if item_name == "미니PC":
-        return CategorySuggestion("전산 > 집기 > 컴퓨터 > PC > 미니PC", "stock", "new_candidate", 0.94, "미니 PC 본체")
+        return CategorySuggestion(f"{FIXTURE_BASE_PATH} > 컴퓨터 > PC > 미니PC", "stock", "new_candidate", 0.94, "미니 PC 본체")
     if item_name == "노트북":
-        return CategorySuggestion("전산 > 집기 > 컴퓨터 > 노트북", "stock", "new_candidate", 0.92, "노트북 본체")
+        return CategorySuggestion(f"{FIXTURE_BASE_PATH} > 컴퓨터 > 노트북", "stock", "new_candidate", 0.92, "노트북 본체")
     if item_name == "모니터":
         inch = monitor_inch(raw)
-        return CategorySuggestion(f"전산 > 집기 > 모니터 > {inch}", "stock", "new_candidate", 0.92, "모니터 인치별 분류")
+        return CategorySuggestion(f"{FIXTURE_BASE_PATH} > 모니터 > {inch}", "stock", "new_candidate", 0.92, "모니터 인치별 분류")
     if item_name == "TV":
-        return CategorySuggestion("전산 > 집기 > 영상장비 > TV", "stock", "new_candidate", 0.9, "TV는 모니터와 분리")
+        return CategorySuggestion(f"{FIXTURE_BASE_PATH} > 영상장비 > TV", "stock", "new_candidate", 0.9, "TV는 모니터와 분리")
     if item_name in {"프로젝터", "영상장비"}:
-        return CategorySuggestion(f"전산 > 집기 > 영상장비 > {item_name}", "stock", "new_candidate", 0.88, "영상장비")
+        return CategorySuggestion(f"{FIXTURE_BASE_PATH} > 영상장비 > {item_name}", "stock", "new_candidate", 0.88, "영상장비")
     if item_name == "프린터/복합기":
-        return CategorySuggestion("전산 > 집기 > 프린터/복합기", "stock", "new_candidate", 0.9, "전산 집기")
+        return CategorySuggestion(f"{FIXTURE_BASE_PATH} > 프린터/복합기", "stock", "new_candidate", 0.9, "전산 집기비품")
 
     if item_name in {"메모리", "SSD", "HDD", "CPU", "그래픽카드", "메인보드", "파워서플라이", "케이스", "CPU쿨러", "시스템쿨러"}:
-        return CategorySuggestion(f"전산 > 소모품 > 부품 > {item_name}", "stock", "new_candidate", 0.9, "PC 부품")
+        return CategorySuggestion(f"{CONSUMABLE_BASE_PATH} > 부품 > {item_name}", "stock", "new_candidate", 0.9, "PC 소모성 부품")
     if item_name == "네트워크허브":
         return CategorySuggestion(network_switch_path(raw), "stock", "new_candidate", 0.9, "스위치 허브 포트 기준")
     if item_name == "SFP모듈":
         if "멀티" in raw or "sx" in model_name.lower() or "mm" in raw.lower():
-            return CategorySuggestion("전산 > 소모품 > 네트워크 > 모듈 > 멀티 모듈", "stock", "new_candidate", 0.9, "SFP 멀티모드")
-        return CategorySuggestion("전산 > 소모품 > 네트워크 > 모듈 > 싱글 모듈", "stock", "new_candidate", 0.9, "SFP 싱글모드")
+            return CategorySuggestion(f"{CONSUMABLE_BASE_PATH} > 네트워크 > 모듈 > 멀티 모듈", "stock", "new_candidate", 0.9, "SFP 멀티모드")
+        return CategorySuggestion(f"{CONSUMABLE_BASE_PATH} > 네트워크 > 모듈 > 싱글 모듈", "stock", "new_candidate", 0.9, "SFP 싱글모드")
     if item_name == "USB허브":
         return CategorySuggestion(usb_hub_path(raw), "stock", "new_candidate", 0.9, "USB 허브 타입 기준")
-    if item_name in {"랜카드", "무선AP", "KVM", "블루투스동글", "무선수신기"}:
-        return CategorySuggestion(f"전산 > 소모품 > 네트워크 > {item_name}", "stock", "new_candidate", 0.85, "네트워크/연결 장비")
+    if item_name in {"무선AP", "KVM"}:
+        return CategorySuggestion(f"{FIXTURE_BASE_PATH} > 네트워크장비 > {item_name}", "stock", "new_candidate", 0.88, "장기간 사용하는 네트워크 장비")
+    if item_name in {"랜카드", "블루투스동글", "무선수신기"}:
+        return CategorySuggestion(f"{CONSUMABLE_BASE_PATH} > 네트워크 > {item_name}", "stock", "new_candidate", 0.85, "네트워크 연결 소모품")
     if item_name == "랜커넥터":
-        return CategorySuggestion("전산 > 소모품 > 네트워크 > 랜커넥터", "stock", "new_candidate", 0.85, "랜 커넥터")
+        return CategorySuggestion(f"{CONSUMABLE_BASE_PATH} > 네트워크 > 랜커넥터", "stock", "new_candidate", 0.85, "랜 커넥터")
     if item_name in {"케이블", "젠더"}:
-        return CategorySuggestion(cable_path(raw) if item_name == "케이블" else "전산 > 소모품 > 케이블 > 젠더", "stock", "new_candidate", 0.88, "케이블/젠더")
+        return CategorySuggestion(cable_path(raw) if item_name == "케이블" else f"{CONSUMABLE_BASE_PATH} > 케이블 > 젠더", "stock", "new_candidate", 0.88, "케이블/젠더")
     if item_name in {"건전지", "아답터", "충전기", "멀티탭"}:
-        return CategorySuggestion(f"전산 > 소모품 > 전원 > {item_name}", "stock", "new_candidate", 0.88, "전원 소모품")
+        return CategorySuggestion(f"{CONSUMABLE_BASE_PATH} > 전원 > {item_name}", "stock", "new_candidate", 0.88, "전원 소모품")
     if item_name == "충전기/거치대":
         return CategorySuggestion("전산 > 소모품 > 전원 > 충전기/거치대", "stock", "new_candidate", 0.84, "충전/거치 소모품")
     if item_name == "TV거치대":
-        return CategorySuggestion("전산 > 소모품 > 기타 > TV거치대", "stock", "new_candidate", 0.95, "TV 거치대는 소모품")
+        return CategorySuggestion(f"{FIXTURE_BASE_PATH} > 영상장비 > TV거치대", "stock", "new_candidate", 0.9, "장기간 사용하는 TV 부속 장비")
     if item_name in {"마우스", "키보드", "키보드/마우스세트"}:
         if item_name == "마우스":
             path = "전산 > 소모품 > 입력장치 > 무선 > 마우스" if "무선" in text or "블루투스" in text else "전산 > 소모품 > 입력장치 > 유선 > 마우스"
@@ -378,10 +413,11 @@ def suggest_category(item_name: str, model_name: str, raw: str) -> CategorySugge
         else:
             path = "전산 > 소모품 > 입력장치 > 유선 > 일반키보드"
         return CategorySuggestion(path, "stock", "new_candidate", 0.86, "입력장치")
-    if item_name in {"헤드셋", "이어폰", "마이크", "스피커", "웹캠", "마우스패드", "모니터암", "모니터받침대", "액정보호필름", "노트북가방"}:
+    if item_name in {"마이크", "스피커", "웹캠", "모니터암", "모니터받침대"}:
+        return CategorySuggestion(f"{FIXTURE_BASE_PATH} > 회의용장비 > {item_name}", "stock", "new_candidate", 0.86, "장기간 사용하는 전산/회의 장비")
+    if item_name in {"헤드셋", "이어폰", "마우스패드", "액정보호필름", "노트북가방"}:
         existing = {
             "헤드셋": "전산 > 소모품 > 기타 > 헤드셋",
-            "웹캠": "전산 > 소모품 > 기타 > 웹캠",
             "마우스패드": "전산 > 소모품 > 기타 > 마우스패드",
         }
         return CategorySuggestion(existing.get(item_name, f"전산 > 소모품 > 기타 > {item_name}"), "stock", "new_candidate", 0.84, "전산 주변 소모품")
@@ -442,16 +478,28 @@ def ensure_category_path(cursor, path: str, path_map: dict[str, int]) -> int:
 
 def seed_category_rules(cursor, path_map: dict[str, int]) -> None:
     rules = [
-        ("exclude_service", "조립/설치서비스", None, None, "exclude", 10, "창고 재고 제외"),
-        ("non_stock_office", "오피스", None, "전산 > 집기 > 소프트웨어", "non_stock", 20, "라이선스 비재고"),
-        ("non_stock_os", "운영체제", None, "전산 > 집기 > 소프트웨어", "non_stock", 20, "OS 비재고"),
-        ("tv_mount_consumable", "TV거치대", None, "전산 > 소모품 > 기타 > TV거치대", "stock", 30, "TV거치대는 소모품"),
-        ("office_pc", "사무용 PC", None, "전산 > 집기 > 컴퓨터 > PC > 일반용", "stock", 40, "전용 GPU 없음"),
-        ("cad_pc", "CAD PC", None, "전산 > 집기 > 컴퓨터 > PC > 캐드용", "stock", 40, "전용 GPU 있음"),
-        ("mini_pc", "미니PC", None, "전산 > 집기 > 컴퓨터 > PC > 미니PC", "stock", 45, "미니PC"),
-        ("monitor_24", "모니터", "24", "전산 > 집기 > 모니터 > 24인치", "stock", 50, "모니터 인치"),
-        ("monitor_27", "모니터", "27", "전산 > 집기 > 모니터 > 27인치", "stock", 50, "모니터 인치"),
-        ("monitor_32", "모니터", "32", "전산 > 집기 > 모니터 > 32인치", "stock", 50, "모니터 인치"),
+        ("expense_setup_service", "조립/설치서비스", None, f"{EXPENSE_BASE_PATH} > 조립/설치서비스", "expense", 10, "설치/조립 비용"),
+        ("expense_subscription", "소프트웨어이용료", None, f"{EXPENSE_BASE_PATH} > 소프트웨어이용료", "expense", 15, "구독형 소프트웨어 비용"),
+        ("expense_maintenance", "유지보수료", None, f"{EXPENSE_BASE_PATH} > 유지보수료", "expense", 15, "유지보수/업데이트/기술지원 비용"),
+        ("expense_cloud", "클라우드서비스", None, f"{EXPENSE_BASE_PATH} > 클라우드서비스", "expense", 15, "클라우드 사용료"),
+        ("expense_hosting", "호스팅", None, f"{EXPENSE_BASE_PATH} > 호스팅", "expense", 15, "호스팅 비용"),
+        ("expense_security", "보안관제", None, f"{EXPENSE_BASE_PATH} > 보안관제", "expense", 15, "보안관제 비용"),
+        ("expense_groupware", "그룹웨어이용료", None, f"{EXPENSE_BASE_PATH} > 그룹웨어이용료", "expense", 15, "그룹웨어 이용료"),
+        ("non_stock_office", "오피스", None, SOFTWARE_ASSET_PATH, "non_stock", 20, "컴퓨터소프트웨어 라이선스"),
+        ("non_stock_os", "운영체제", None, SOFTWARE_ASSET_PATH, "non_stock", 20, "OS 라이선스"),
+        ("tv_mount_fixture", "TV거치대", None, f"{FIXTURE_BASE_PATH} > 영상장비 > TV거치대", "stock", 30, "장기간 사용하는 TV 부속 장비"),
+        ("office_pc", "사무용 PC", None, f"{FIXTURE_BASE_PATH} > 컴퓨터 > PC > 일반용", "stock", 40, "전용 GPU 없음"),
+        ("cad_pc", "CAD PC", None, f"{FIXTURE_BASE_PATH} > 컴퓨터 > PC > 캐드용", "stock", 40, "전용 GPU 있음"),
+        ("mini_pc", "미니PC", None, f"{FIXTURE_BASE_PATH} > 컴퓨터 > PC > 미니PC", "stock", 45, "미니PC"),
+        ("network_switch", "네트워크허브", None, f"{FIXTURE_BASE_PATH} > 네트워크장비 > 스위치 허브", "stock", 45, "장기간 사용하는 네트워크 장비"),
+        ("wireless_ap", "무선AP", None, f"{FIXTURE_BASE_PATH} > 네트워크장비 > 무선AP", "stock", 45, "장기간 사용하는 네트워크 장비"),
+        ("kvm", "KVM", None, f"{FIXTURE_BASE_PATH} > 네트워크장비 > KVM", "stock", 45, "장기간 사용하는 네트워크 장비"),
+        ("meeting_mic", "마이크", None, f"{FIXTURE_BASE_PATH} > 회의용장비 > 마이크", "stock", 45, "장기간 사용하는 전산/회의 장비"),
+        ("meeting_webcam", "웹캠", None, f"{FIXTURE_BASE_PATH} > 회의용장비 > 웹캠", "stock", 45, "장기간 사용하는 전산/회의 장비"),
+        ("meeting_speaker", "스피커", None, f"{FIXTURE_BASE_PATH} > 회의용장비 > 스피커", "stock", 45, "장기간 사용하는 전산/회의 장비"),
+        ("monitor_24", "모니터", "24", f"{FIXTURE_BASE_PATH} > 모니터 > 24인치", "stock", 50, "모니터 인치"),
+        ("monitor_27", "모니터", "27", f"{FIXTURE_BASE_PATH} > 모니터 > 27인치", "stock", 50, "모니터 인치"),
+        ("monitor_32", "모니터", "32", f"{FIXTURE_BASE_PATH} > 모니터 > 32인치", "stock", 50, "모니터 인치"),
     ]
     for rule_name, item_name, pattern, path, policy, priority, notes in rules:
         target_id = path_map.get(path) if path else None
@@ -537,7 +585,7 @@ def update_reclassification(cursor, ensure_categories: bool, force_locked_normal
         target_category_id = None
         if suggestion.path:
             before_len = len(path_map)
-            if ensure_categories and suggestion.stock_policy == "stock":
+            if ensure_categories:
                 target_category_id = ensure_category_path(cursor, suggestion.path, path_map)
             else:
                 target_category_id = path_map.get(suggestion.path)

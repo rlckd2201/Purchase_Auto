@@ -57,6 +57,112 @@ _PRODUCT_CODE_LINE_RE = re.compile(
     r"^\s*(?:제품코드|상품코드|상품번호|Product\s*No\.?)\s*[:：]?\s*\d+\s*$",
     re.IGNORECASE,
 )
+RECIPIENT_EXEMPT_DOCUMENT_CATEGORY = "소모품"
+SOFTWARE_EXPENSE_MARKERS = (
+    "microsoft 365",
+    "creative cloud",
+    "saas",
+    "월구독",
+    "연구독",
+    "구독",
+    "클라우드",
+    "호스팅",
+    "유지보수",
+    "업데이트",
+    "기술지원",
+    "보안관제",
+    "그룹웨어 이용료",
+    "웹서비스",
+    "서비스 이용료",
+    "사용료",
+    "subscription",
+    "cloud",
+    "hosting",
+    "maintenance",
+    "support",
+)
+SOFTWARE_ASSET_MARKERS = (
+    "영구라이선스",
+    "영구 라이선스",
+    "구매형 라이선스",
+    "처음사용자용",
+    "라이선스",
+    "license",
+    "office",
+    "오피스",
+    "한컴오피스",
+    "windows",
+    "win11",
+    "서버 os",
+    "운영체제",
+    "erp",
+    "dbms",
+    "autocad",
+    "외주개발",
+    "업무용 프로그램",
+    "소프트웨어",
+)
+CONSUMABLE_DOCUMENT_MARKERS = (
+    "용지",
+    "토너",
+    "잉크",
+    "문구",
+    "청소용품",
+    "케이블",
+    "랜선",
+    "젠더",
+    "더미",
+    "플러그",
+    "마우스",
+    "키보드",
+    "마우스패드",
+    "동글",
+    "usb허브",
+    "usb hub",
+    "멀티허브",
+    "배터리",
+    "건전지",
+    "소모성 부품",
+    "잡자재",
+)
+FIXTURE_DOCUMENT_MARKERS = (
+    "노트북",
+    "아이디어패드",
+    "thinkpad",
+    "갤럭시북",
+    "그램",
+    "vivobook",
+    "zenbook",
+    "데스크탑",
+    "미니 pc",
+    "미니pc",
+    "pc",
+    "프린터",
+    "복합기",
+    "모니터",
+    "책상",
+    "의자",
+    "캐비닛",
+    "서랍장",
+    "가구",
+    "냉장고",
+    "tv",
+    "공기청정기",
+    "ups",
+    "스위칭허브",
+    "스위치허브",
+    "스위치 허브",
+    "네트워크허브",
+    "공유기",
+    "라우터",
+    "무선ap",
+    "kvm",
+    "거리연장기",
+    "네트워크장비",
+    "마이크",
+    "웹캠",
+    "스피커",
+)
 
 
 def _factory_label_from_text(value: str) -> str:
@@ -781,41 +887,34 @@ def _document_purchase_label(job: PurchaseJob) -> str:
         return "집기비품"
     if "컴퓨터소프트웨어" in categories:
         return "컴퓨터소프트웨어"
+    if "비용" in categories:
+        return "비용"
     return "소모품"
+
+
+def _contains_marker(name: str, lowered: str, markers: tuple[str, ...]) -> bool:
+    return any(marker in lowered or marker in name for marker in markers)
 
 
 def _item_document_category(name: str) -> str:
     lowered = name.lower()
-    maker = _maker_from_item(name).lower()
-    consumable_markers = ("가방", "케이블", "젠더", "더미", "플러그", "마우스", "키보드")
-    if any(marker in lowered or marker in name for marker in consumable_markers):
-        return "소모품"
-    if "office" in lowered or "windows" in lowered or "소프트웨어" in name or "라이선스" in name:
+    if _contains_marker(name, lowered, SOFTWARE_EXPENSE_MARKERS):
+        return "비용"
+    if _contains_marker(name, lowered, SOFTWARE_ASSET_MARKERS):
         return "컴퓨터소프트웨어"
-    fixture_markers = (
-        "노트북",
-        "아이디어패드",
-        "thinkpad",
-        "갤럭시북",
-        "그램",
-        "vivobook",
-        "zenbook",
-        "데스크탑",
-        "pc",
-        "프린터",
-        "복합기",
-        "모니터",
-        "마이크",
-        "웹캠",
-        "스피커",
-    )
-    if any(marker in lowered or marker in name for marker in fixture_markers) or maker in {"fifine", "브리츠"}:
+    maker = _maker_from_item(name).lower()
+    strong_fixture_markers = tuple(marker for marker in FIXTURE_DOCUMENT_MARKERS if marker != "pc")
+    if _contains_marker(name, lowered, strong_fixture_markers) or maker in {"fifine", "브리츠"}:
+        return "집기비품"
+    if _contains_marker(name, lowered, CONSUMABLE_DOCUMENT_MARKERS):
+        return "소모품"
+    if re.search(r"\bpc\b", lowered):
         return "집기비품"
     return "소모품"
 
 
 def _recipient_rows_for_job(job: PurchaseJob) -> list[list[object]]:
-    if _document_purchase_label(job) == "소모품":
+    if _document_purchase_label(job) == RECIPIENT_EXEMPT_DOCUMENT_CATEGORY:
         dept = _memo_field(job, ("지급부서", "부서", "asset_dept", "dept")) or "전산팀"
         target = _memo_field(job, ("지급대상", "대상", "asset_target", "target")) or "전산팀"
         purpose = _memo_field(job, ("용도", "asset_purpose", "purpose")) or "업무용"
@@ -844,7 +943,7 @@ def _recipient_rows_for_job(job: PurchaseJob) -> list[list[object]]:
 
     missing: list[str] = []
     for line in product_lines:
-        if _item_document_category(line.name) == "소모품":
+        if _item_document_category(line.name) == RECIPIENT_EXEMPT_DOCUMENT_CATEGORY:
             continue
         item = job.items[line.item_index] if 0 <= line.item_index < len(job.items) else None
         dept = (getattr(item, "asset_department", None) if item else None) or global_dept
@@ -860,7 +959,7 @@ def _recipient_rows_for_job(job: PurchaseJob) -> list[list[object]]:
     if missing:
         targets = ", ".join(missing)
         raise RuntimeError(
-            "집기비품/소프트웨어 지급대상 정보가 부족합니다. 구매 단계에서 각 대상 품목의 부서, 사용자, 용도를 입력하세요: "
+            "비소모품 지급대상 정보가 부족합니다. 구매 단계에서 소모품이 아닌 각 대상 품목의 부서, 사용자, 용도를 입력하세요: "
             f"{targets}"
         )
 

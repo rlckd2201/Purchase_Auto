@@ -28,11 +28,13 @@ from purchase_auto.groupware_approval import (
     _approval_rule_for_job,
     _approval_title,
     _delegate_level_for_job,
+    _document_purchase_label,
     _factory_label,
     _fallback_groupware_form_url,
     _groupware_text_pattern,
     _groupware_form_env_name,
     _item_category,
+    _item_document_category,
     _model_from_item,
     _normalize_groupware_label_text,
     _recipient_rows_for_job,
@@ -383,6 +385,19 @@ def test_asset_product_rows_split_item_category_and_model_for_office_equipment()
     assert _model_from_item("[브리츠] 브리즈 고감도 구즈넥 콘덴서 마이크 BE-GM3 : 컴퓨존") == "BE-GM3"
 
 
+def test_document_category_uses_business_rules_not_amount_only() -> None:
+    assert _item_document_category("MS Office 영구 라이선스") == "컴퓨터소프트웨어"
+    assert _item_document_category("Microsoft 365 연구독") == "비용"
+    assert _item_document_category("스위칭허브 8포트") == "집기비품"
+    assert _item_document_category("네트워크허브 24포트") == "집기비품"
+    assert _item_document_category("무선AP") == "집기비품"
+    assert _item_document_category("KVM 거리연장기") == "집기비품"
+    assert _item_document_category("웹캠") == "집기비품"
+    assert _item_document_category("HDMI 케이블") == "소모품"
+    assert _item_document_category("무선 마우스") == "소모품"
+    assert _item_document_category("토너 카트리지") == "소모품"
+
+
 def test_asset_recipients_can_be_collected_per_product_line() -> None:
     now = datetime.now(timezone.utc)
     summary = "\n".join(
@@ -475,6 +490,32 @@ def test_asset_approval_requires_recipient_input_for_asset_lines() -> None:
 
     with pytest.raises(RuntimeError, match="지급대상 정보가 부족"):
         _approval_body_html(job)
+
+
+def test_non_consumable_software_and_expense_require_recipient_input() -> None:
+    now = datetime.now(timezone.utc)
+    for summary, expected_label in [
+        ("MS Office 영구 라이선스\t1\t300000\t300000", "컴퓨터소프트웨어"),
+        ("Microsoft 365 연구독\t1\t200000\t200000", "비용"),
+    ]:
+        job = PurchaseJob(
+            job_id="job",
+            corp="일강",
+            corp_code="ilgang",
+            status=PurchaseStatus.QUOTE_SAVED,
+            items=[PurchaseItem(url="https://www.compuzone.co.kr/product/product_detail.htm?ProductNo=1", quantity=1)],
+            title="전산 구매 건",
+            order_no="28185435",
+            amount=300000,
+            memo="사업자번호=125-81-51622",
+            item_summary=summary,
+            created_at=now,
+            updated_at=now,
+        )
+
+        assert _document_purchase_label(job) == expected_label
+        with pytest.raises(RuntimeError, match="지급대상 정보가 부족"):
+            _approval_body_html(job)
 
 
 def test_groupware_factory_label_uses_ilgang_business_number() -> None:

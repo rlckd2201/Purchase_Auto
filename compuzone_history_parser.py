@@ -95,7 +95,13 @@ CATEGORY_RULES = (
     ("프로젝터", ("빔프로젝터", "프로젝터")),
     ("프린터/복합기", ("프린터", "복합기", "무한잉크")),
     ("조립/설치서비스", ("일반조립비", "조립비", "하드웨어조립", "os 설치비")),
-    ("오피스", ("office", "microsoft 365", "한컴오피스", " 한글 ")),
+    ("소프트웨어이용료", ("microsoft 365", "creative cloud", "saas", "구독")),
+    ("유지보수료", ("유지보수", "업데이트 비용", "기술지원")),
+    ("클라우드서비스", ("클라우드", "cloud")),
+    ("호스팅", ("호스팅", "hosting")),
+    ("보안관제", ("보안관제",)),
+    ("그룹웨어이용료", ("그룹웨어 이용료",)),
+    ("오피스", ("office", "한컴오피스", " 한글 ")),
     ("운영체제", ("windows 11", "win11", "처음사용자용 패키지", "os설치비포함", "복구솔루션")),
     ("메인보드", ("메인보드", "m-atx", "인텔b", "amd b650", "amd b850", "b760/atx")),
     ("CPU", ("라이젠", "코어 i", "9800x3d", "cpu ")),
@@ -823,6 +829,18 @@ def classify_desktop_pc_category(value: str) -> str:
 
 def classify_item_name(value: str) -> str:
     text = f" {normalize_space(value).lower()} "
+    if "microsoft 365" in text or "creative cloud" in text or "saas" in text or "구독" in text:
+        return "소프트웨어이용료"
+    if "유지보수" in text or "업데이트 비용" in text or "기술지원" in text:
+        return "유지보수료"
+    if "클라우드" in text or "cloud" in text:
+        return "클라우드서비스"
+    if "호스팅" in text or "hosting" in text:
+        return "호스팅"
+    if "보안관제" in text:
+        return "보안관제"
+    if "그룹웨어 이용료" in text:
+        return "그룹웨어이용료"
     if "tv 거치대" in text or "tv스탠드" in text or "티비거치대" in text:
         return "TV거치대"
     if "windows 11" in text or "win11" in text or ("마이크로소프트" in text and "os설치비포함" in text):
