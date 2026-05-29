@@ -7,9 +7,17 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .compuzone_order import SoldOutProductError
 from .config import load_settings
-from .models import CreatePurchaseJobRequest, PurchaseJob, RunCompuzoneOrderRequest, RunStepResponse, SubmitApprovalRequest
+from .models import (
+    ApprovalPreviewResponse,
+    CreatePurchaseJobRequest,
+    PurchaseJob,
+    RunCompuzoneOrderRequest,
+    RunStepResponse,
+    SubmitApprovalRequest,
+)
 from .services import (
     PurchaseStepBusyError,
+    approval_preview_step,
     create_purchase_job,
     get_purchase_job,
     list_purchase_jobs,
@@ -139,6 +147,14 @@ def submit_approval(job_id: str, request: SubmitApprovalRequest | None = None) -
     try:
         job = submit_approval_step(job_id, _settings_for_groupware(request))
         return RunStepResponse(job=job, message="그룹웨어 품의 자동상신 단계가 완료되었습니다.")
+    except Exception as exc:
+        raise _http_error(exc) from exc
+
+
+@app.get("/api/purchase-jobs/{job_id}/approval-preview", response_model=ApprovalPreviewResponse)
+def approval_preview(job_id: str) -> ApprovalPreviewResponse:
+    try:
+        return ApprovalPreviewResponse(**approval_preview_step(job_id))
     except Exception as exc:
         raise _http_error(exc) from exc
 

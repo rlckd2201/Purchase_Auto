@@ -14,7 +14,7 @@ from . import db
 from .compuzone_order import QuoteDownloadError, SoldOutProductError, run_compuzone_order
 from .config import Settings, load_settings
 from .corps import get_corp
-from .groupware_approval import submit_groupware_approval
+from .groupware_approval import _approval_body_html, _approval_title, submit_groupware_approval
 from .models import CreatePurchaseJobRequest, PurchaseJob, PurchaseStatus
 
 
@@ -260,6 +260,20 @@ def submit_approval_step(job_id: str, settings: Settings | None = None) -> Purch
     except Exception as exc:
         db.set_failed(cfg.db_path, job_id, str(exc))
         raise
+
+
+def approval_preview_step(job_id: str, settings: Settings | None = None) -> dict[str, str | PurchaseJob]:
+    cfg = _settings(settings)
+    job = get_purchase_job(job_id, cfg)
+    if not job.order_no:
+        raise ValueError("컴퓨존 주문번호가 없어 품의 본문을 미리볼 수 없습니다.")
+    if not job.quote_pdf_path:
+        raise ValueError("컴퓨존 견적서 PDF가 없어 품의 본문을 미리볼 수 없습니다.")
+    return {
+        "job": job,
+        "title": _approval_title(job),
+        "body_html": _approval_body_html(job),
+    }
 
 
 def mark_tax_invoice_received(job_id: str, settings: Settings | None = None) -> PurchaseJob:

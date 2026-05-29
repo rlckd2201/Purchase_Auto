@@ -134,3 +134,9 @@ class PurchaseJob(BaseModel):
 class RunStepResponse(BaseModel):
     job: PurchaseJob
     message: str
+
+
+class ApprovalPreviewResponse(BaseModel):
+    job: PurchaseJob
+    title: str
+    body_html: str
