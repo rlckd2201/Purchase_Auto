@@ -53,6 +53,22 @@ class PurchaseItem(BaseModel):
 
     url: str
     quantity: int = Field(ge=1)
+    product_name: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("product_name", "productName", "item_name", "itemName", "품목", "품명"),
+    )
+    product_specification: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("product_specification", "productSpecification", "specification", "spec", "규격", "모델"),
+    )
+    product_manufacturer: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("product_manufacturer", "productManufacturer", "manufacturer", "maker", "제조사"),
+    )
+    product_model: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("product_model", "productModel", "model", "model_name", "modelName", "모델명"),
+    )
     asset_department: str | None = Field(
         default=None,
         validation_alias=AliasChoices("asset_department", "asset_dept", "department", "dept", "부서", "지급부서"),
@@ -82,7 +98,17 @@ class PurchaseItem(BaseModel):
             raise ValueError("상품 URL은 http:// 또는 https:// 로 시작해야 합니다.")
         return text
 
-    @field_validator("asset_department", "asset_user", "asset_purpose", "asset_note", mode="before")
+    @field_validator(
+        "product_name",
+        "product_specification",
+        "product_manufacturer",
+        "product_model",
+        "asset_department",
+        "asset_user",
+        "asset_purpose",
+        "asset_note",
+        mode="before",
+    )
     @classmethod
     def normalize_optional_text(cls, value):
         if value is None:

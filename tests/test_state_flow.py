@@ -180,6 +180,38 @@ def test_consumable_approval_body_follows_html2_shape() -> None:
     assert "28140035" in body
 
 
+def test_consumable_approval_body_uses_wms_item_name_and_specification() -> None:
+    now = datetime.now(timezone.utc)
+    job = PurchaseJob(
+        job_id="job",
+        corp="대승정밀",
+        corp_code="daeseung_precision",
+        status=PurchaseStatus.QUOTE_SAVED,
+        items=[
+            PurchaseItem(
+                url="https://www.compuzone.co.kr/product/product_detail.htm?ProductNo=123",
+                quantity=1,
+                product_name="케이블",
+                product_specification="NEXT LC-LC",
+            )
+        ],
+        title="전산 소모품 구매 건(P3공장)",
+        memo="사업자번호=403-85-15640\nP3공장",
+        order_no="28190271",
+        amount=6280,
+        item_summary="넥스트유 LC-LC\t1\t3280\t3280",
+        created_at=now,
+        updated_at=now,
+    )
+
+    body = _approval_body_html(job)
+
+    assert "P3공장" in body
+    assert "P2공장" not in body
+    assert ">케이블<" in body
+    assert "NEXT LC-LC" in body
+
+
 def test_consumable_approval_body_omits_no_shipping_row() -> None:
     now = datetime.now(timezone.utc)
     job = PurchaseJob(
@@ -691,8 +723,8 @@ def test_compuzone_tax_business_uses_factory_hint_over_stale_memo_number(tmp_pat
 
     business_number, contact_name = _job_tax_business_selection(job, _settings(tmp_path))
 
-    assert _factory_business_number(job) == "844-85-00770"
-    assert business_number == "844-85-00770"
+    assert _factory_business_number(job) == "403-85-15640"
+    assert business_number == "403-85-15640"
     assert contact_name == "윤기옥"
 
 
@@ -713,8 +745,8 @@ def test_compuzone_tax_business_uses_p4_factory_over_stale_p3_memo_number(tmp_pa
 
     business_number, contact_name = _job_tax_business_selection(job, _settings(tmp_path))
 
-    assert _factory_business_number(job) == "118-85-07029"
-    assert business_number == "118-85-07029"
+    assert _factory_business_number(job) == "844-85-00770"
+    assert business_number == "844-85-00770"
     assert contact_name == "윤기옥"
 
 

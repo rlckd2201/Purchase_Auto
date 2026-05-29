@@ -40,9 +40,9 @@ FACTORY_BY_BUSINESS_NUMBER = {
     "403-85-07607": "D2공장",
     "403-85-23311": "D3공장",
     "125-81-32697": "P1공장",
-    "403-85-15640": "P2공장",
-    "844-85-00770": "P3공장",
-    "118-85-07029": "P4공장",
+    "403-85-15640": "P3공장",
+    "844-85-00770": "P4공장",
+    "118-85-07029": "P2공장",
     "125-81-51622": "일강1공장",
     "403-85-20895": "일강2공장",
 }
@@ -716,7 +716,7 @@ def _asset_approval_body_html(job: PurchaseJob) -> str:
         if _shipping_marked_free(job):
             shipping = 0
         product_rows = [
-            _asset_product_row(factory, line.name, line.quantity, line.unit_price, line.amount)
+            _asset_product_row_for_line(job, factory, line)
             for line in sorted_product_lines
         ]
     else:
@@ -779,7 +779,7 @@ def _consumable_approval_body_html(job: PurchaseJob) -> str:
         if _shipping_marked_free(job):
             shipping = 0
         product_rows = [
-            _approval_product_row(line.name, line.quantity, line.unit_price, line.amount)
+            _approval_product_row_for_line(job, line)
             for line in sorted_product_lines
         ]
     else:
@@ -1135,11 +1135,55 @@ def _item_category(name: str) -> str:
     return _short_product_name(name)
 
 
-def _approval_product_row(name: str, quantity: int, unit_price: int, amount: int) -> list[str]:
+def _purchase_item_for_line(job: PurchaseJob, line: ApprovalProductLine):
+    if 0 <= line.item_index < len(job.items):
+        return job.items[line.item_index]
+    return None
+
+
+def _line_item_name(job: PurchaseJob, line: ApprovalProductLine) -> str:
+    item = _purchase_item_for_line(job, line)
+    return (getattr(item, "product_name", None) if item else None) or line.name
+
+
+def _line_maker(job: PurchaseJob, line: ApprovalProductLine) -> str:
+    item = _purchase_item_for_line(job, line)
+    return (getattr(item, "product_manufacturer", None) if item else None) or _maker_from_item(line.name)
+
+
+def _line_model(job: PurchaseJob, line: ApprovalProductLine) -> str:
+    item = _purchase_item_for_line(job, line)
+    if item:
+        model = getattr(item, "product_model", None) or getattr(item, "product_specification", None)
+        if model:
+            return _clean_model_text(model)
+    return _model_from_item(line.name)
+
+
+def _approval_product_row_for_line(job: PurchaseJob, line: ApprovalProductLine) -> list[str]:
+    return _approval_product_row(
+        _line_item_name(job, line),
+        line.quantity,
+        line.unit_price,
+        line.amount,
+        maker=_line_maker(job, line),
+        model=_line_model(job, line),
+    )
+
+
+def _approval_product_row(
+    name: str,
+    quantity: int,
+    unit_price: int,
+    amount: int,
+    *,
+    maker: str | None = None,
+    model: str | None = None,
+) -> list[str]:
     return [
         _item_category(name),
-        _maker_from_item(name),
-        _model_from_item(name),
+        maker or _maker_from_item(name),
+        model or _model_from_item(name),
         f"{quantity} EA",
         _won(unit_price),
         _won(amount),
@@ -1209,12 +1253,33 @@ _RECIPIENT_COLUMNS = [
 ]
 
 
-def _asset_product_row(factory: str, name: str, quantity: int, unit_price: int, amount: int) -> list[str]:
+def _asset_product_row_for_line(job: PurchaseJob, factory: str, line: ApprovalProductLine) -> list[str]:
+    return _asset_product_row(
+        factory,
+        _line_item_name(job, line),
+        line.quantity,
+        line.unit_price,
+        line.amount,
+        maker=_line_maker(job, line),
+        model=_line_model(job, line),
+    )
+
+
+def _asset_product_row(
+    factory: str,
+    name: str,
+    quantity: int,
+    unit_price: int,
+    amount: int,
+    *,
+    maker: str | None = None,
+    model: str | None = None,
+) -> list[str]:
     return [
         factory,
         _item_category(name),
-        _maker_from_item_for_asset(name),
-        _model_from_item(name),
+        maker or _maker_from_item_for_asset(name),
+        model or _model_from_item(name),
         f"{quantity} EA",
         _won(unit_price),
         _won(amount),
