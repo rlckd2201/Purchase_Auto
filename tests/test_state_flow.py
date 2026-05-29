@@ -241,6 +241,7 @@ def test_consumable_approval_body_follows_html2_shape() -> None:
     assert "rgb(212, 244, 250)" not in body
     assert "table-layout: auto" in body
     assert "min-width: 748px" in body
+    assert body.count("width: 748px; min-width: 748px") >= 2
     assert "min-width:" in body
     assert "width: 180px" not in body
     assert "word-break: keep-all" in body

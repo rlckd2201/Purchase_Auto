@@ -1227,6 +1227,7 @@ def _approval_blank_paragraph() -> str:
 _CONSUMABLE_PURCHASE_LABELS = ["품목", "제조사", "모델", "수량", "단가", "금액", "비고"]
 _PURCHASE_EQUAL_WIDTH_COLUMNS = {3, 4, 5}
 _PURCHASE_MONEY_COLUMNS = {4, 5}
+_CONSUMABLE_TABLE_STYLE = "width: 748px; min-width: 748px; max-width: 100%; table-layout: auto;"
 
 _ASSET_PURCHASE_LABELS = ["구분", "품목", "제조사", "모델명", "수량", "단가", "금액", "직전구매단가", "비고"]
 _ASSET_PURCHASE_EQUAL_WIDTH_COLUMNS = {4, 5, 6}
@@ -1431,8 +1432,7 @@ def _consumable_purchase_table(rows: list[list[str]], total_text: str, shipping_
         '<table bordercolor="#6e6e6e" border="1" cellspacing="0" cellpadding="0" '
         'style="color: rgb(0, 0, 0); font-family: 돋움, dotum, AppleGothic, arial, Helvetica, sans-serif; '
         'font-size: 12px; margin: 0px; padding: 0px; border: 0px solid rgb(0, 0, 0); '
-        'border-spacing: 0px; width: auto; min-width: 748px; max-width: 100%; table-layout: auto; '
-        'background-color: white; border-collapse: collapse;">'
+        f"border-spacing: 0px; {_CONSUMABLE_TABLE_STYLE} background-color: white; border-collapse: collapse;\">"
         f"{_purchase_colgroup(specs)}"
         '<tbody style="margin: 0px; padding: 0px;">'
         f"{_purchase_row(_CONSUMABLE_PURCHASE_LABELS, specs, header=True)}"
@@ -1484,7 +1484,7 @@ def _purchase_row(values: list[str], specs: list[str], *, header: bool = False) 
 
 
 def _consumable_payment_table(rows: list[list[str]], *, table_style: str | None = None) -> str:
-    table_style = table_style or "width: auto; min-width: 94ch; max-width: 100%; table-layout: auto;"
+    table_style = table_style or _CONSUMABLE_TABLE_STYLE
     return (
         '<table border="1" cellspacing="0" cellpadding="0" '
         'style="color: rgb(0, 0, 0); font-family: 돋움, dotum, AppleGothic, arial, Helvetica, sans-serif; '
