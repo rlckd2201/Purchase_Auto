@@ -50,6 +50,18 @@ from purchase_auto.services import (
     submit_approval_step,
 )
 
+BUSINESS_FACTORY_CASES = [
+    ("대승", "daeseung", "D1공장", "125-81-05619"),
+    ("대승", "daeseung", "D2공장", "403-85-07607"),
+    ("대승", "daeseung", "D3공장", "403-85-23311"),
+    ("대승정밀", "daeseung_precision", "P1공장", "125-81-32697"),
+    ("대승정밀", "daeseung_precision", "P2공장", "118-85-07029"),
+    ("대승정밀", "daeseung_precision", "P3공장", "403-85-15640"),
+    ("대승정밀", "daeseung_precision", "P4공장", "844-85-00770"),
+    ("일강", "ilgang", "일강1공장", "125-81-51622"),
+    ("일강", "ilgang", "일강2공장", "403-85-20895"),
+]
+
 
 def _settings(tmp_path: Path) -> Settings:
     return Settings(
@@ -95,6 +107,66 @@ def _request() -> CreatePurchaseJobRequest:
         memo="드라이런",
         items=[{"url": "https://www.compuzone.co.kr/product/product_detail.htm?ProductNo=123456", "quantity": 2}],
     )
+
+
+@pytest.mark.parametrize("corp,corp_code,factory,business_number", BUSINESS_FACTORY_CASES)
+def test_groupware_factory_label_uses_business_number_mapping(corp, corp_code, factory, business_number) -> None:
+    now = datetime.now(timezone.utc)
+    job = PurchaseJob(
+        job_id="job",
+        corp=corp,
+        corp_code=corp_code,
+        status=PurchaseStatus.QUOTE_SAVED,
+        items=[PurchaseItem(url="https://www.compuzone.co.kr/product/product_detail.htm?ProductNo=123", quantity=1)],
+        title="전산 소모품 구매 건",
+        memo=f"사업자번호={business_number}",
+        created_at=now,
+        updated_at=now,
+    )
+
+    assert _factory_label(job) == factory
+
+
+@pytest.mark.parametrize("corp,corp_code,factory,business_number", [
+    case for case in BUSINESS_FACTORY_CASES if case[2][0] in {"D", "P"}
+])
+def test_compuzone_tax_business_number_uses_factory_mapping(corp, corp_code, factory, business_number) -> None:
+    now = datetime.now(timezone.utc)
+    job = PurchaseJob(
+        job_id="job",
+        corp=corp,
+        corp_code=corp_code,
+        status=PurchaseStatus.CREATED,
+        items=[PurchaseItem(url="https://www.compuzone.co.kr/product/product_detail.htm?ProductNo=123", quantity=1)],
+        title=f"전산 소모품 구매 건({factory})",
+        memo="사업자번호=000-00-00000",
+        created_at=now,
+        updated_at=now,
+    )
+
+    assert _factory_business_number(job) == business_number
+
+
+@pytest.mark.parametrize("corp,corp_code,factory,business_number", [
+    case for case in BUSINESS_FACTORY_CASES if case[1] == "ilgang"
+])
+def test_ilgang_tax_business_number_falls_back_to_selected_memo_number(tmp_path: Path, corp, corp_code, factory, business_number) -> None:
+    now = datetime.now(timezone.utc)
+    job = PurchaseJob(
+        job_id="job",
+        corp=corp,
+        corp_code=corp_code,
+        status=PurchaseStatus.CREATED,
+        items=[PurchaseItem(url="https://www.compuzone.co.kr/product/product_detail.htm?ProductNo=123", quantity=1)],
+        title=f"전산 소모품 구매 건({factory})",
+        memo=f"사업자번호={business_number}",
+        created_at=now,
+        updated_at=now,
+    )
+
+    selected_business_number, _ = _job_tax_business_selection(job, _settings(tmp_path))
+
+    assert selected_business_number == business_number
 
 
 def test_groupware_missing_ilgang_url_falls_back_to_approval_home(tmp_path: Path) -> None:
