@@ -239,11 +239,11 @@ def test_consumable_approval_body_follows_html2_shape() -> None:
     assert "\\3,000" in body
     assert "\uc5c6\uc74c" not in body
     assert "rgb(212, 244, 250)" not in body
-    assert "table-layout: auto" in body
+    assert "table-layout: fixed" in body
     assert "min-width: 748px" in body
-    assert body.count("width: 748px; min-width: 748px") >= 2
-    assert "min-width:" in body
-    assert "width: 180px" not in body
+    assert body.count("width: 748px; min-width: 748px; max-width: 748px; table-layout: fixed") >= 2
+    assert "width: 180px" in body
+    assert "width: 119px" in body
     assert "word-break: keep-all" in body
     assert "HDMI 2.0 \ub354\ubbf8 \ud50c\ub7ec\uadf8" in body
     assert "IN-HDPGD / ING031" in body

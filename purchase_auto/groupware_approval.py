@@ -1225,9 +1225,9 @@ def _approval_blank_paragraph() -> str:
 
 
 _CONSUMABLE_PURCHASE_LABELS = ["품목", "제조사", "모델", "수량", "단가", "금액", "비고"]
-_PURCHASE_EQUAL_WIDTH_COLUMNS = {3, 4, 5}
+_CONSUMABLE_PURCHASE_WIDTHS = [180, 110, 160, 55, 80, 90, 73]
 _PURCHASE_MONEY_COLUMNS = {4, 5}
-_CONSUMABLE_TABLE_STYLE = "width: 748px; min-width: 748px; max-width: 100%; table-layout: auto;"
+_CONSUMABLE_TABLE_STYLE = "width: 748px; min-width: 748px; max-width: 748px; table-layout: fixed; box-sizing: border-box;"
 
 _ASSET_PURCHASE_LABELS = ["구분", "품목", "제조사", "모델명", "수량", "단가", "금액", "직전구매단가", "비고"]
 _ASSET_PURCHASE_EQUAL_WIDTH_COLUMNS = {4, 5, 6}
@@ -1235,13 +1235,13 @@ _ASSET_PURCHASE_MONEY_COLUMNS = {5, 6, 7}
 _ASSET_PURCHASE_MINIMUMS = [5, 8, 6, 10, 5, 5, 5, 10, 4]
 
 _CONSUMABLE_PAYMENT_COLUMNS = [
-    ("구분", "101px", "center"),
-    ("은행명", "76px", "center"),
-    ("계좌번호", "122px", "center"),
-    ("예금주", "121px", "center"),
-    ("금액", "96px", "center"),
-    ("가지급금", "92px", "center"),
-    ("미지급금", "92px", "center"),
+    ("구분", "99px", "center"),
+    ("은행명", "74px", "center"),
+    ("계좌번호", "119px", "center"),
+    ("예금주", "118px", "center"),
+    ("금액", "94px", "center"),
+    ("가지급금", "90px", "center"),
+    ("미지급금", "90px", "center"),
     ("비고", "64px", "center"),
 ]
 
@@ -1443,16 +1443,8 @@ def _consumable_purchase_table(rows: list[list[str]], total_text: str, shipping_
     )
 
 
-def _purchase_column_specs(rows: list[list[str]]) -> list[str]:
-    minimums = [6, 6, 8, 5, 5, 5, 3]
-    widths: list[int] = []
-    for index, label in enumerate(_CONSUMABLE_PURCHASE_LABELS):
-        column_values = [label, *(row[index] for row in rows if len(row) > index)]
-        widths.append(max(minimums[index], max(_display_width(value) for value in column_values) + 1))
-    equal_width = max(widths[index] for index in _PURCHASE_EQUAL_WIDTH_COLUMNS)
-    for index in _PURCHASE_EQUAL_WIDTH_COLUMNS:
-        widths[index] = equal_width
-    return [f"min-width: {width}ch;" for width in widths]
+def _purchase_column_specs(_rows: list[list[str]]) -> list[str]:
+    return [f"width: {width}px;" for width in _CONSUMABLE_PURCHASE_WIDTHS]
 
 
 def _display_width(value: str) -> int:
