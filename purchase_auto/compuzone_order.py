@@ -458,26 +458,8 @@ def _open_cart_order_page(
     page.goto(settings.compuzone_cart_url, wait_until="domcontentloaded", timeout=60000)
     _raise_if_login_required(page)
     _assert_cart_ready_for_order(page, len(job.items), expected_marker_groups)
-    _click_first(
-        page,
-        [
-            "button:has-text('전체 주문')",
-            "a:has-text('전체 주문')",
-            "input[value*='전체 주문']",
-            "button:has-text('선택 주문')",
-            "a:has-text('선택 주문')",
-            "input[value*='선택 주문']",
-            "button:has-text('주문하기')",
-            "a:has-text('주문하기')",
-            "button:has-text('구매하기')",
-            "a:has-text('구매하기')",
-            "button[onclick*='Order']",
-            "a[onclick*='Order']",
-            "button[onclick*='order']",
-            "a[onclick*='order']",
-        ],
-        "장바구니 주문 버튼을 찾지 못했습니다.",
-    )
+    _click_cart_order_button(page)
+
     page.wait_for_load_state("domcontentloaded", timeout=60000)
     _progress(log, f"컴퓨존 장바구니 주문 페이지 이동 완료 ({_elapsed(cart_started)})")
     return product_lines
@@ -1347,6 +1329,160 @@ def _clear_cart(page, settings: Settings) -> None:
     except Exception:
         page.wait_for_timeout(1500)
 
+def _click_cart_order_button(page) -> None:
+    selectors = [
+        "button:has-text('전체상품 주문하기')",
+        "a:has-text('전체상품 주문하기')",
+        "input[value*='전체상품 주문하기']",
+        "button:has-text('선택상품 주문하기')",
+        "a:has-text('선택상품 주문하기')",
+        "input[value*='선택상품 주문하기']",
+        "button:has-text('전체 상품 주문하기')",
+        "a:has-text('전체 상품 주문하기')",
+        "input[value*='전체 상품 주문하기']",
+        "button:has-text('선택 상품 주문하기')",
+        "a:has-text('선택 상품 주문하기')",
+        "input[value*='선택 상품 주문하기']",
+        "button:has-text('전체 주문')",
+        "a:has-text('전체 주문')",
+        "input[value*='전체 주문']",
+        "button:has-text('선택 주문')",
+        "a:has-text('선택 주문')",
+        "input[value*='선택 주문']",
+        "button:has-text('주문하기')",
+        "a:has-text('주문하기')",
+        "input[value*='주문하기']",
+        "button:has-text('구매하기')",
+        "a:has-text('구매하기')",
+        "input[value*='구매하기']",
+        "button:has-text('결제하기')",
+        "a:has-text('결제하기')",
+        "input[value*='결제하기']",
+        "a:has(img[alt*='주문'])",
+        "button:has(img[alt*='주문'])",
+        "a:has(img[title*='주문'])",
+        "button:has(img[title*='주문'])",
+        "input[type='image'][alt*='주문']",
+        "input[type='image'][title*='주문']",
+        "input[type='button'][value*='주문']",
+        "input[type='submit'][value*='주문']",
+        "[role='button'][aria-label*='주문']",
+        "[title*='주문'][onclick]",
+        "[class*='order'][onclick]",
+        "[id*='order'][onclick]",
+        "button[onclick*='Order']",
+        "a[onclick*='Order']",
+        "button[onclick*='order']",
+        "a[onclick*='order']",
+        "button[onclick*='ORDER']",
+        "a[onclick*='ORDER']",
+        "a[href*='order']",
+        "button[formaction*='order']",
+    ]
+    last_error = None
+    for selector in selectors:
+        locator = page.locator(selector).first
+        try:
+            if locator.count() <= 0:
+                continue
+            locator.click(timeout=2500)
+            return
+        except Exception as exc:
+            last_error = exc
+            continue
+
+    result = page.evaluate(
+        """
+        () => {
+          const visible = element => {
+            const style = window.getComputedStyle(element);
+            const rect = element.getBoundingClientRect();
+            return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
+          };
+          const clickableOf = element => {
+            if (/^(A|BUTTON|INPUT)$/i.test(element.tagName)) return element;
+            return element.closest('a, button, [role="button"], [onclick]') || element;
+          };
+          const uniq = values => Array.from(new Set(values.filter(Boolean)));
+          const imgValues = element => Array.from(element.querySelectorAll ? element.querySelectorAll('img') : [])
+            .flatMap(img => [img.getAttribute('alt'), img.getAttribute('title'), img.getAttribute('src')])
+            .filter(Boolean).join(' ');
+          const textOf = element => uniq([
+            element.innerText,
+            element.textContent,
+            element.value,
+            element.getAttribute('alt'),
+            element.getAttribute('title'),
+            element.getAttribute('aria-label'),
+            imgValues(element),
+          ]).join(' ').replace(/\s+/g, ' ').trim();
+          const attrOf = element => uniq([
+            element.getAttribute('onclick'),
+            element.getAttribute('href'),
+            element.getAttribute('formaction'),
+            element.className,
+            element.id,
+            imgValues(element),
+          ]).join(' ');
+          const isGlobalNav = element => Boolean(element.closest('header, #header, .header, .top, .gnb, .nav, .quick, .quick_menu, .right_quick, .floating, .footer, #footer'));
+          const isCartArea = element => Boolean(element.closest('form, table, .cart, .basket, .bsk, #cart, #basket, .cart_wrap, .basket_wrap, .order_list, .order_box, .total, .total_price, .payment'));
+          const rawElements = Array.from(document.querySelectorAll('a, button, input, [role="button"], [onclick], img[alt], img[title]'));
+          const elements = uniq(rawElements.map(clickableOf)).filter(element => element && visible(element));
+          const candidates = [];
+          for (const element of elements) {
+            const text = textOf(element);
+            const attr = attrOf(element);
+            const haystack = `${text} ${attr}`;
+            const isAllOrderText = /전체\s*상품\s*주문|전체\s*주문/.test(text);
+            const isSelectedOrderText = /선택\s*상품\s*주문|선택\s*주문/.test(text);
+            const isOrderText = isAllOrderText || isSelectedOrderText || /주문\s*하기|구매\s*하기|결제\s*하기/.test(text);
+            const hasOrderAction = /(order|ordr|buy|payment|pay|basket_order|cart_order|order_form|order_go|goorder|ordercheck|order_now)/i.test(attr);
+            const hasCartOrderAction = /(basket|cart|bsk)/i.test(attr) && /(order|buy|payment|pay)/i.test(attr);
+            const isBlocked = /삭제|비우기|견적|계속\s*쇼핑|쇼핑\s*계속|주문\s*조회|배송\s*조회|로그인|관심|찜|위시|wish|favorite/.test(haystack);
+            let score = 0;
+            if (isAllOrderText) score += 210;
+            if (isSelectedOrderText) score += 190;
+            if (isOrderText) score += 150;
+            if (hasCartOrderAction) score += 150;
+            if (hasOrderAction) score += 110;
+            if (isCartArea(element)) score += 55;
+            if (/order/i.test(String(element.className || '') + ' ' + String(element.id || ''))) score += 45;
+            if (/btn|button/i.test(String(element.className || ''))) score += 20;
+            if (isGlobalNav(element)) score -= 140;
+            if (isBlocked) score -= 220;
+            if (score > 0 || /주문|구매|결제|order|buy|payment/i.test(haystack)) {
+              candidates.push({ element, score, text, attr: String(attr).slice(0, 220), isCartArea: isCartArea(element) });
+            }
+          }
+          candidates.sort((a, b) => b.score - a.score);
+          const picked = candidates.find(candidate => candidate.score >= 140);
+          if (!picked) {
+            return { clicked: false, candidates: candidates.slice(0, 10).map(({ score, text, attr, isCartArea }) => ({ score, text, attr, isCartArea })) };
+          }
+          picked.element.scrollIntoView({ block: 'center', inline: 'center' });
+          picked.element.click();
+          return {
+            clicked: true,
+            picked: { score: picked.score, text: picked.text, attr: picked.attr, isCartArea: picked.isCartArea },
+            candidates: candidates.slice(0, 10).map(({ score, text, attr, isCartArea }) => ({ score, text, attr, isCartArea })),
+          };
+        }
+        """
+    )
+    if isinstance(result, dict) and result.get("clicked"):
+        page.wait_for_timeout(800)
+        return
+
+    candidates = result.get("candidates") if isinstance(result, dict) else []
+    screen_summary = _page_text_excerpt(page, max_chars=220)
+    detail = f" 현재페이지={page.url}"
+    if screen_summary:
+        detail += f" 화면요약={screen_summary}"
+    if candidates:
+        detail += f" 감지후보={candidates}"
+    if last_error:
+        detail += f" 마지막클릭오류={str(last_error)[:180]}"
+    raise RuntimeError(f"장바구니 주문 버튼을 찾지 못했습니다.{detail}")
 
 def _click_first(page, selectors: list[str], error_message: str, timeout: int = 5000) -> None:
     for selector in selectors:

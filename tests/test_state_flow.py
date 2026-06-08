@@ -905,6 +905,16 @@ def test_compuzone_cart_add_supports_recommend_pc_cart_action() -> None:
     assert "a[onclick*='new_recommendpc_insert']:not([onclick*='_order'])" in source
 
 
+def test_compuzone_cart_order_button_supports_image_and_compact_labels() -> None:
+    source = inspect.getsource(compuzone_order._click_cart_order_button)
+
+    assert "전체상품 주문하기" in source
+    assert "선택상품 주문하기" in source
+    assert "a:has(img[alt*='주문'])" in source
+    assert "input[type='image'][alt*='주문']" in source
+    assert "hasCartOrderAction" in source
+    assert "감지후보" in source
+
 def test_compuzone_cart_iframe_wait_does_not_stall_on_basket_navigation() -> None:
     source = inspect.getsource(compuzone_order)
 
