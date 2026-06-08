@@ -55,9 +55,9 @@ BUSINESS_FACTORY_CASES = [
     ("대승", "daeseung", "D2공장", "403-85-07607"),
     ("대승", "daeseung", "D3공장", "403-85-23311"),
     ("대승정밀", "daeseung_precision", "P1공장", "125-81-32697"),
-    ("대승정밀", "daeseung_precision", "P2공장", "118-85-07029"),
-    ("대승정밀", "daeseung_precision", "P3공장", "403-85-15640"),
-    ("대승정밀", "daeseung_precision", "P4공장", "844-85-00770"),
+    ("대승정밀", "daeseung_precision", "P2공장", "403-85-15640"),
+    ("대승정밀", "daeseung_precision", "P3공장", "844-85-00770"),
+    ("대승정밀", "daeseung_precision", "P4공장", "118-85-07029"),
     ("일강", "ilgang", "일강1공장", "125-81-51622"),
     ("일강", "ilgang", "일강2공장", "403-85-20895"),
 ]
@@ -796,8 +796,8 @@ def test_compuzone_tax_business_uses_factory_hint_over_stale_memo_number(tmp_pat
 
     business_number, contact_name = _job_tax_business_selection(job, _settings(tmp_path))
 
-    assert _factory_business_number(job) == "403-85-15640"
-    assert business_number == "403-85-15640"
+    assert _factory_business_number(job) == "844-85-00770"
+    assert business_number == "844-85-00770"
     assert contact_name == "윤기옥"
 
 
@@ -811,15 +811,15 @@ def test_compuzone_tax_business_uses_p4_factory_over_stale_p3_memo_number(tmp_pa
         items=[PurchaseItem(url="https://www.compuzone.co.kr/product/product_detail.htm?ProductNo=1294126", quantity=1)],
         title="전산 집기비품 구매 건(P4공장)",
         requester="TEST",
-        memo="사업자번호=844-85-00770\nP4공장",
+        memo="사업자번호=118-85-07029\nP4공장",
         created_at=now,
         updated_at=now,
     )
 
     business_number, contact_name = _job_tax_business_selection(job, _settings(tmp_path))
 
-    assert _factory_business_number(job) == "844-85-00770"
-    assert business_number == "844-85-00770"
+    assert _factory_business_number(job) == "118-85-07029"
+    assert business_number == "118-85-07029"
     assert contact_name == "윤기옥"
 
 
