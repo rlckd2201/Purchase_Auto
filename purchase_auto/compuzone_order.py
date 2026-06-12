@@ -18,6 +18,10 @@ _RELEVANT_RESPONSE_RE = re.compile(
     r"(order_function|product_detail_opt_function|basket|bsk|cart|buy|buyea)",
     re.IGNORECASE,
 )
+_CHROME_EXECUTABLE_CANDIDATES = (
+    Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe"),
+    Path(r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe"),
+)
 ProgressLog = Callable[[str], None] | None
 
 
@@ -177,6 +181,45 @@ def _dry_run_order(job: PurchaseJob, settings: Settings) -> CompuzoneOrderResult
     )
 
 
+def _remove_chromium_singleton_locks(profile_dir: Path) -> None:
+    for name in ("SingletonLock", "SingletonCookie", "SingletonSocket"):
+        target = profile_dir / name
+        try:
+            if target.exists() or target.is_symlink():
+                target.unlink()
+        except Exception:
+            pass
+
+
+def _compact_error(value: object) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def _launch_compuzone_context(chromium, settings: Settings):
+    attempts: list[tuple[str, dict[str, str]]] = [
+        ("playwright-chromium", {}),
+        ("chrome-channel", {"channel": "chrome"}),
+    ]
+    for executable in _CHROME_EXECUTABLE_CANDIDATES:
+        if executable.exists():
+            attempts.append((f"chrome-executable:{executable}", {"executable_path": str(executable)}))
+
+    errors: list[str] = []
+    for label, extra in attempts:
+        _remove_chromium_singleton_locks(settings.compuzone_profile_dir)
+        try:
+            return chromium.launch_persistent_context(
+                user_data_dir=str(settings.compuzone_profile_dir),
+                headless=settings.headless,
+                accept_downloads=True,
+                **extra,
+            )
+        except Exception as exc:
+            errors.append(f"{label}: {_compact_error(exc)}")
+
+    raise RuntimeError(" | ".join(errors))
+
+
 def _live_order(job: PurchaseJob, settings: Settings, log: ProgressLog = None) -> CompuzoneOrderResult:
     from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
     from playwright.sync_api import sync_playwright
@@ -191,15 +234,13 @@ def _live_order(job: PurchaseJob, settings: Settings, log: ProgressLog = None) -
             close_context = False
         else:
             try:
-                context = p.chromium.launch_persistent_context(
-                    user_data_dir=str(settings.compuzone_profile_dir),
-                    headless=settings.headless,
-                    accept_downloads=True,
-                )
+                context = _launch_compuzone_context(p.chromium, settings)
             except Exception as exc:
+                detail = _compact_error(exc)
                 raise RuntimeError(
                     "컴퓨존 브라우저 실행에 실패했습니다. "
                     f"프로필이 이미 사용 중이거나 Chromium이 즉시 종료되었습니다: {settings.compuzone_profile_dir}"
+                    + (f" / launch_errors={detail}" if detail else "")
                 ) from exc
         page = context.new_page()
         dialog_messages: list[str] = []

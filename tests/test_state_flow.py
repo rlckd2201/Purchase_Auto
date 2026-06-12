@@ -1022,6 +1022,14 @@ def test_compuzone_launch_error_mentions_profile_lock() -> None:
     assert "프로필이 이미 사용 중" in source
 
 
+def test_compuzone_launch_falls_back_to_installed_chrome() -> None:
+    source = inspect.getsource(compuzone_order._launch_compuzone_context)
+
+    assert '"channel": "chrome"' in source
+    assert "executable_path" in source
+    assert "_remove_chromium_singleton_locks" in source
+
+
 class _FakeProductPage:
     def __init__(self, status: dict[str, object]) -> None:
         self._status = status
