@@ -2085,10 +2085,17 @@ def _fill_depositor_name(page, depositor_name: str) -> None:
 
 
 def _dismiss_order_info_modal(page) -> None:
-    page.evaluate(
-        """
+    try:
+        page.evaluate(
+            """
         () => {
+          if (!document.body) {
+            return false;
+          }
           const visible = (element) => {
+            if (!element || typeof element.getBoundingClientRect !== 'function') {
+              return false;
+            }
             const style = window.getComputedStyle(element);
             const rect = element.getBoundingClientRect();
             return style.display !== 'none' && style.visibility !== 'hidden' && rect.width > 0 && rect.height > 0;
@@ -2187,14 +2194,21 @@ def _dismiss_order_info_modal(page) -> None:
               modal.setAttribute('aria-hidden', 'true');
             }
           }
-          document.body.style.overflow = 'unset';
+          if (document.body) {
+            document.body.style.overflow = 'unset';
+          }
           const stickySummary = document.querySelector('.totalS_wrap');
           if (stickySummary) {
             stickySummary.style.zIndex = '10';
           }
+          return true;
         }
         """
-    )
+        )
+    except Exception:
+        # Best-effort popup cleanup. The order flow should continue if the page is
+        # mid-navigation or the DOM is briefly unavailable.
+        return
 
 
 def _click_final_order(page) -> None:

@@ -915,6 +915,15 @@ def test_compuzone_cart_order_button_supports_image_and_compact_labels() -> None
     assert "hasCartOrderAction" in source
     assert "감지후보" in source
 
+def test_dismiss_order_info_modal_is_best_effort_when_dom_is_missing() -> None:
+    class FakePage:
+        def evaluate(self, script: str):
+            assert "if (!document.body)" in script
+            raise RuntimeError("Cannot read properties of null (reading 'style')")
+
+    compuzone_order._dismiss_order_info_modal(FakePage())
+
+
 def test_compuzone_cart_iframe_wait_does_not_stall_on_basket_navigation() -> None:
     source = inspect.getsource(compuzone_order)
 
